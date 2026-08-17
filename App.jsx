@@ -1199,9 +1199,34 @@ const store = {
   async del(k) { try { await window.storage.delete(k); } catch { } },
 };
 
+function scoringLabel(ppr) {
+  if (ppr === 1) return "PPR";
+  if (ppr === 0.5) return "Half PPR";
+  if (ppr === 0) return "Standard";
+  return "";
+}
+
+function leagueFormat(lgOrMeta) {
+  const s = lgOrMeta?.settings || lgOrMeta || {};
+  const score = scoringLabel(s.ppr);
+  return `${s.teams || "?"}-team${score ? ` ${score}` : ""}${s.superflex ? " SF" : ""}`;
+}
+
+function cleanMockName(name) {
+  const raw = String(name || "").trim();
+  if (!raw) return "Mock League";
+  if (/^\d+-team\s+(ppr|half(?:\s+ppr)?|std|standard)(?:\s+sf)?$/i.test(raw)) return "Mock League";
+  if (/^\d+-team\s+mock$/i.test(raw)) return "Mock League";
+  return raw;
+}
+
+function leagueHeaderLabel(lg) {
+  return `${cleanMockName(lg?.name)} · ${leagueFormat(lg)}`;
+}
+
 async function saveLeague(lg) {
   const idx = (await store.get("huddle:index")) || [];
-  const meta = { id: lg.id, name: lg.name, teams: lg.settings.teams, at: Date.now(), phase: lg.season ? (lg.season.champion != null ? "Complete" : `Week ${lg.season.week}`) : draftDone(lg) ? "Drafted" : `Pick ${lg.picks.length + 1}` };
+  const meta = { id: lg.id, name: cleanMockName(lg.name), teams: lg.settings.teams, ppr: lg.settings.ppr, superflex: !!lg.settings.superflex, at: Date.now(), phase: lg.season ? (lg.season.champion != null ? "Complete" : `Week ${lg.season.week}`) : draftDone(lg) ? "Drafted" : `Pick ${lg.picks.length + 1}` };
   const next = [meta, ...idx.filter((m) => m.id !== lg.id)].slice(0, 20);
   await store.set("huddle:index", next);
   await store.set(`huddle:lg:${lg.id}`, lg);
@@ -1248,6 +1273,16 @@ function MockHome({ onOpen, onCreate }) {
     const next = idx.filter((m) => m.id !== id);
     await store.set("huddle:index", next); setSaved(next);
   };
+  const rename = async (id, currentName) => {
+    const nextName = window.prompt("Mock league name", cleanMockName(currentName));
+    if (!nextName?.trim()) return;
+    const lg = await store.get(`huddle:lg:${id}`);
+    if (!lg) return;
+    lg.name = nextName.trim();
+    await saveLeague(lg);
+    const idx = (await store.get("huddle:index")) || [];
+    setSaved(idx);
+  };
 
   return (
     <div className="wrap">
@@ -1266,11 +1301,12 @@ function MockHome({ onOpen, onCreate }) {
           <div className="card tight" style={{ marginBottom: 16 }}>
             {saved.map((m) => (
               <div key={m.id} className="plr">
-                <div style={{ flex: 1 }}>
-                  <div className="nm">{m.name}</div>
-                  <div className="sub">{m.teams} teams · {m.phase}</div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div className="nm" style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{cleanMockName(m.name)}</div>
+                  <div className="sub">{leagueFormat(m)} · {m.phase}</div>
                 </div>
                 <button className="chip on" onClick={() => load(m.id)}>Open</button>
+                <button className="chip" onClick={() => rename(m.id, m.name)}>Rename</button>
                 <button className="chip" onClick={() => remove(m.id)}>Delete</button>
               </div>
             ))}
@@ -1312,6 +1348,11 @@ function MockHome({ onOpen, onCreate }) {
           </div>
         </div>
         <div style={{ marginBottom: 9 }}>
+          <div className="eyebrow" style={{ marginBottom: 4 }}>Mock league name</div>
+          <input placeholder="e.g. Office League Mock" value={cfg.name} onChange={(e) => setCfg({ ...cfg, name: e.target.value })} />
+          <div className="mini" style={{ marginTop: 5 }}>This appears beside the league format at the top of the mock.</div>
+        </div>
+        <div style={{ marginBottom: 9 }}>
           <div className="eyebrow" style={{ marginBottom: 4 }}>Team name</div>
           <input value={cfg.teamName} onChange={(e) => setCfg({ ...cfg, teamName: e.target.value })} />
         </div>
@@ -1340,7 +1381,7 @@ function MockHome({ onOpen, onCreate }) {
             onChange={(e) => setCfg({ ...cfg, superflex: e.target.checked })} />
           <span style={{ fontSize: 13 }}>Superflex (QB/RB/WR/TE second flex)</span>
         </label>
-        <button className="btn" onClick={() => onCreate(makeLeague({ ...cfg, name: cfg.name || `${cfg.teams}-team ${cfg.ppr === 1 ? "PPR" : cfg.ppr === 0.5 ? "Half" : "Std"}${cfg.superflex ? " SF" : ""}` }))}>
+        <button className="btn" onClick={() => onCreate(makeLeague({ ...cfg, name: cfg.name.trim() || "Mock League" }))}>
           Start draft
         </button>
       </div>
@@ -1947,10 +1988,10 @@ function SeasonView({ lg, setLg, toast, setTab }) {
           <div className="eyebrow">{done ? "Season complete" : rs ? "Regular season" : "Playoffs"}</div>
           <h1 style={{ fontSize: 28, marginTop: 3 }}>{done ? "Final" : `Week ${s.week}`}</h1>
         </div>
-        <div className="row" style={{ gap: 6 }}>
+        <div className="row" style={{ gap: 6, overflowX: "auto", flexWrap: "nowrap", WebkitOverflowScrolling: "touch", maxWidth: "100%", paddingBottom: 2 }}>
           {["hub", "recap", "standings", "wire", "trade"].map((v) => (
-            <button key={v} className={`chip ${view === v ? "on" : ""}`} onClick={() => setView(v)}>
-              {v === "hub" ? "Hub" : v === "recap" ? "Scores" : v === "standings" ? "Table" : v === "wire" ? "Wire" : "Trade"}
+            <button key={v} className={`chip ${view === v ? "on" : ""}`} style={{ flex: "0 0 auto", whiteSpace: "nowrap" }} onClick={() => setView(v)}>
+              {v === "hub" ? "Mock Hub" : v === "recap" ? "Mock Scores" : v === "standings" ? "Mock Table" : v === "wire" ? "Mock Waiver Wire" : "Mock Trade"}
             </button>
           ))}
         </div>
@@ -2946,7 +2987,7 @@ function GMChat({ lg }) {
    with no mock league required. Saved separately from any league.
    ============================================================ */
 
-export const VERSION = "1.3.0";
+export const VERSION = "1.3.1";
 const MY_KEY = "huddle:myteam";
 
 const DEFAULT_MY = { ids: [], teams: 12, ppr: 1, superflex: false, name: "My Team", topPad: 0 };
@@ -3161,7 +3202,7 @@ function Settings({ my, save, toast, onWipe }) {
         for (const [id, lg] of Object.entries(data.leagues)) {
           if (!lg) continue;
           await store.set(`huddle:lg:${id}`, lg);
-          idx.push({ id, name: lg.name, teams: lg.settings.teams, at: Date.now(), phase: "Imported" });
+          idx.push({ id, name: cleanMockName(lg.name), teams: lg.settings.teams, ppr: lg.settings.ppr, superflex: !!lg.settings.superflex, at: Date.now(), phase: "Imported" });
         }
         await store.set("huddle:index", idx); setLeagues(idx);
       }
@@ -3334,7 +3375,7 @@ export default function App() {
             <button className="chip" onClick={lg ? () => { saveLeague(lg); setLg(null); } : home}>← Back</button>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div className="nm" style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                {lg ? lg.name : TITLES[screen]}
+                {lg ? leagueHeaderLabel(lg) : TITLES[screen]}
               </div>
               <div className="sub">
                 {lg
