@@ -2,6 +2,8 @@
 
 **2026 Fantasy Football**
 
+**Version 1.3.2** — version-proof mock-season recovery and automatic restore.
+
 A phone-first fantasy sandbox built around one persistent league state:
 **mock draft, lineup, season simulation, waivers, trades, playoffs.**
 
@@ -124,8 +126,16 @@ that forwards requests to Anthropic and point `VITE_ANTHROPIC_PROXY` at it inste
 ## Saving
 
 Leagues save automatically to browser storage as you play, and appear on the home
-screen. Storage is per browser and per device, so clearing site data clears leagues.
-Use Settings > Download save to move between phones.
+screen. Huddle also keeps a separate **automatic recovery mirror** of every mock league
+and your saved roster. Before **Fetch new version**, the app snapshots all current mocks
+again, clears only the cached app files, then reloads. On startup it checks the recovery
+copy and restores any missing league data automatically.
+
+If the app reloads while a mock league is open, Huddle also remembers that league and
+the active bottom tab so it can reopen where you left off. Supporting browsers are asked
+to treat the local storage as persistent. Storage is still per browser/device, so clearing
+site data yourself can remove both copies. Use **Settings > Download save** for an
+off-device backup or to move between phones.
 
 ---
 

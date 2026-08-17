@@ -1199,6 +1199,116 @@ const store = {
   async del(k) { try { await window.storage.delete(k); } catch { } },
 };
 
+/* ---- version-proof recovery mirror ----
+   Normal Huddle saves live behind window.storage. These recovery keys live in a
+   separate localStorage namespace so a new app build can recover leagues even
+   if the normal storage wrapper or save schema changes. */
+const RECOVERY_NS = "huddle::recovery::v1";
+const RECOVERY_INDEX = `${RECOVERY_NS}::index`;
+const RECOVERY_MY = `${RECOVERY_NS}::myteam`;
+const RECOVERY_ACTIVE = `${RECOVERY_NS}::active`;
+const recoveryLeagueKey = (id) => `${RECOVERY_NS}::league::${id}`;
+
+function recoveryGet(key) {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+function recoverySet(key, value) {
+  if (typeof window === "undefined") return false;
+  try { window.localStorage.setItem(key, JSON.stringify(value)); return true; } catch { return false; }
+}
+function recoveryDel(key) {
+  if (typeof window === "undefined") return;
+  try { window.localStorage.removeItem(key); } catch { }
+}
+
+function phaseForLeague(lg) {
+  return lg?.season
+    ? (lg.season.champion != null ? "Complete" : `Week ${lg.season.week}`)
+    : draftDone(lg) ? "Drafted" : `Pick ${(lg?.picks?.length || 0) + 1}`;
+}
+
+function metaForLeague(lg, phase = null) {
+  return {
+    id: lg.id,
+    name: cleanMockName(lg.name),
+    teams: lg.settings.teams,
+    ppr: lg.settings.ppr,
+    superflex: !!lg.settings.superflex,
+    at: Date.now(),
+    phase: phase || phaseForLeague(lg),
+  };
+}
+
+async function createRecoverySnapshot(myTeamOverride = null) {
+  const idx = (await store.get("huddle:index")) || [];
+  const recoveredIndex = [];
+  for (const m of idx) {
+    const lg = await store.get(`huddle:lg:${m.id}`);
+    if (!lg) continue;
+    recoverySet(recoveryLeagueKey(lg.id), lg);
+    recoveredIndex.push(metaForLeague(lg));
+  }
+  recoverySet(RECOVERY_INDEX, recoveredIndex);
+  const currentMy = myTeamOverride || await store.get("huddle:myteam");
+  if (currentMy) recoverySet(RECOVERY_MY, currentMy);
+  recoverySet(`${RECOVERY_NS}::lastSnapshot`, { version: VERSION, savedAt: Date.now(), leagues: recoveredIndex.length });
+  return recoveredIndex.length;
+}
+
+async function restoreRecoveryData() {
+  const backupIndex = recoveryGet(RECOVERY_INDEX) || [];
+  let currentIndex = (await store.get("huddle:index")) || [];
+  const currentById = new Map(currentIndex.map((m) => [m.id, m]));
+  let changed = false;
+
+  for (const backupMeta of backupIndex) {
+    let lg = await store.get(`huddle:lg:${backupMeta.id}`);
+    if (!lg) {
+      lg = recoveryGet(recoveryLeagueKey(backupMeta.id));
+      if (lg) { await store.set(`huddle:lg:${backupMeta.id}`, lg); changed = true; }
+    }
+    if (lg && !currentById.has(backupMeta.id)) {
+      const meta = metaForLeague(lg, backupMeta.phase);
+      currentIndex.push(meta);
+      currentById.set(meta.id, meta);
+      changed = true;
+    }
+  }
+
+  // A league may exist in the main index while its object is missing. Restore it.
+  for (const m of currentIndex) {
+    const lg = await store.get(`huddle:lg:${m.id}`);
+    if (!lg) {
+      const backup = recoveryGet(recoveryLeagueKey(m.id));
+      if (backup) { await store.set(`huddle:lg:${m.id}`, backup); changed = true; }
+    }
+  }
+
+  if (changed) {
+    currentIndex = currentIndex
+      .filter((m, i, arr) => arr.findIndex((x) => x.id === m.id) === i)
+      .sort((a, b) => (b.at || 0) - (a.at || 0))
+      .slice(0, 20);
+    await store.set("huddle:index", currentIndex);
+  }
+
+  const currentMy = await store.get("huddle:myteam");
+  const backupMy = recoveryGet(RECOVERY_MY);
+  if (!currentMy && backupMy) await store.set("huddle:myteam", backupMy);
+
+  return { restored: changed, leagues: currentIndex.length };
+}
+
+let recoveryRestorePromise = null;
+function ensureRecoveryRestored() {
+  if (!recoveryRestorePromise) recoveryRestorePromise = restoreRecoveryData();
+  return recoveryRestorePromise;
+}
+
 function scoringLabel(ppr) {
   if (ppr === 1) return "PPR";
   if (ppr === 0.5) return "Half PPR";
@@ -1226,10 +1336,14 @@ function leagueHeaderLabel(lg) {
 
 async function saveLeague(lg) {
   const idx = (await store.get("huddle:index")) || [];
-  const meta = { id: lg.id, name: cleanMockName(lg.name), teams: lg.settings.teams, ppr: lg.settings.ppr, superflex: !!lg.settings.superflex, at: Date.now(), phase: lg.season ? (lg.season.champion != null ? "Complete" : `Week ${lg.season.week}`) : draftDone(lg) ? "Drafted" : `Pick ${lg.picks.length + 1}` };
+  const meta = metaForLeague(lg);
   const next = [meta, ...idx.filter((m) => m.id !== lg.id)].slice(0, 20);
   await store.set("huddle:index", next);
   await store.set(`huddle:lg:${lg.id}`, lg);
+
+  // Mirror every league save into the recovery namespace.
+  recoverySet(recoveryLeagueKey(lg.id), lg);
+  recoverySet(RECOVERY_INDEX, next);
 }
 
 /* ---------------- Claude helper ---------------- */
@@ -1264,14 +1378,19 @@ function MockHome({ onOpen, onCreate }) {
     teams: 12, rounds: 15, ppr: 1, superflex: false, userSlot: 5, teamName: "My Team", name: "",
     waiverMode: "faab", faabBudget: 100,
   });
-  useEffect(() => { store.get("huddle:index").then((v) => setSaved(v || [])); }, []);
+  useEffect(() => {
+    ensureRecoveryRestored().then(() => store.get("huddle:index")).then((v) => setSaved(v || []));
+  }, []);
 
   const load = async (id) => { const lg = await store.get(`huddle:lg:${id}`); if (lg) onOpen(lg); };
   const remove = async (id) => {
     await store.del(`huddle:lg:${id}`);
+    recoveryDel(recoveryLeagueKey(id));
     const idx = (await store.get("huddle:index")) || [];
     const next = idx.filter((m) => m.id !== id);
-    await store.set("huddle:index", next); setSaved(next);
+    await store.set("huddle:index", next);
+    recoverySet(RECOVERY_INDEX, next);
+    setSaved(next);
   };
   const rename = async (id, currentName) => {
     const nextName = window.prompt("Mock league name", cleanMockName(currentName));
@@ -2987,7 +3106,7 @@ function GMChat({ lg }) {
    with no mock league required. Saved separately from any league.
    ============================================================ */
 
-export const VERSION = "1.3.1";
+export const VERSION = "1.3.2";
 const MY_KEY = "huddle:myteam";
 
 const DEFAULT_MY = { ids: [], teams: 12, ppr: 1, superflex: false, name: "My Team", topPad: 0 };
@@ -3005,8 +3124,16 @@ function shellLeague(my) {
 function useMyTeam() {
   const [my, setMy] = useState(DEFAULT_MY);
   const [ready, setReady] = useState(false);
-  useEffect(() => { store.get(MY_KEY).then((v) => { if (v) setMy({ ...DEFAULT_MY, ...v }); setReady(true); }); }, []);
-  const save = useCallback((next) => { setMy(next); store.set(MY_KEY, next); }, []);
+  useEffect(() => {
+    ensureRecoveryRestored()
+      .then(() => store.get(MY_KEY))
+      .then((v) => { if (v) setMy({ ...DEFAULT_MY, ...v }); setReady(true); });
+  }, []);
+  const save = useCallback((next) => {
+    setMy(next);
+    store.set(MY_KEY, next);
+    recoverySet(RECOVERY_MY, next);
+  }, []);
   return [my, save, ready];
 }
 
@@ -3165,11 +3292,15 @@ function Settings({ my, save, toast, onWipe }) {
   const [leagues, setLeagues] = useState([]);
   const [busy, setBusy] = useState(false);
   const fileRef = useRef(null);
-  useEffect(() => { store.get("huddle:index").then((v) => setLeagues(v || [])); }, []);
+  useEffect(() => {
+    ensureRecoveryRestored().then(() => store.get("huddle:index")).then((v) => setLeagues(v || []));
+  }, []);
 
   const refresh = async () => {
     setBusy(true);
     try {
+      const count = await createRecoverySnapshot(my);
+      recoverySet(`${RECOVERY_NS}::refresh`, { version: VERSION, at: Date.now(), leagues: count });
       if ("caches" in window) { const ks = await caches.keys(); await Promise.all(ks.map((k) => caches.delete(k))); }
       if (navigator.serviceWorker?.getRegistrations) {
         const rs = await navigator.serviceWorker.getRegistrations();
@@ -3202,9 +3333,12 @@ function Settings({ my, save, toast, onWipe }) {
         for (const [id, lg] of Object.entries(data.leagues)) {
           if (!lg) continue;
           await store.set(`huddle:lg:${id}`, lg);
+          recoverySet(recoveryLeagueKey(id), lg);
           idx.push({ id, name: cleanMockName(lg.name), teams: lg.settings.teams, ppr: lg.settings.ppr, superflex: !!lg.settings.superflex, at: Date.now(), phase: "Imported" });
         }
-        await store.set("huddle:index", idx); setLeagues(idx);
+        await store.set("huddle:index", idx);
+        recoverySet(RECOVERY_INDEX, idx);
+        setLeagues(idx);
       }
       toast("Save imported");
     } catch { toast("That file didn't parse"); }
@@ -3219,7 +3353,7 @@ function Settings({ my, save, toast, onWipe }) {
         <button className="btn alt" style={{ marginTop: 12 }} disabled={busy} onClick={refresh}>
           {busy ? "Refreshing…" : "Fetch new version"}
         </button>
-        <div className="mini" style={{ marginTop: 7 }}>Clears the cached app and reloads. Your saved data stays put.</div>
+        <div className="mini" style={{ marginTop: 7 }}>Creates a recovery snapshot first, then clears the cached app and reloads. Mock seasons are restored automatically if a new build ever loses the normal save keys.</div>
       </div>
 
       <div className="card">
@@ -3254,6 +3388,17 @@ function Settings({ my, save, toast, onWipe }) {
       </div>
 
       <div className="card">
+        <h2 style={{ fontSize: 19, marginBottom: 7 }}>Automatic recovery</h2>
+        <div className="mini" style={{ marginBottom: 10 }}>
+          Huddle keeps a second, version-proof copy of every mock league on this device. It updates as your league saves and is refreshed again before fetching a new version.
+        </div>
+        <button className="btn alt" onClick={async () => {
+          const count = await createRecoverySnapshot(my);
+          toast(`Recovery backup saved · ${count} mock${count === 1 ? "" : "s"}`);
+        }}>Back up now</button>
+      </div>
+
+      <div className="card">
         <h2 style={{ fontSize: 19, marginBottom: 9 }}>Stored data</h2>
         <div className="row sp mini" style={{ marginBottom: 5 }}>
           <span>Your roster</span><b style={{ color: "var(--chalk)" }}>{my.ids.length} players</b>
@@ -3264,8 +3409,13 @@ function Settings({ my, save, toast, onWipe }) {
         <button className="btn alt" style={{ color: "var(--red)" }} onClick={async () => {
           if (!window.confirm("Delete your roster and every saved league? This can't be undone.")) return;
           const idx = (await store.get("huddle:index")) || [];
-          for (const m of idx) await store.del(`huddle:lg:${m.id}`);
+          for (const m of idx) {
+            await store.del(`huddle:lg:${m.id}`);
+            recoveryDel(recoveryLeagueKey(m.id));
+          }
           await store.set("huddle:index", []); await store.del(MY_KEY);
+          recoverySet(RECOVERY_INDEX, []);
+          recoveryDel(RECOVERY_MY); recoveryDel(RECOVERY_ACTIVE);
           save(DEFAULT_MY); setLeagues([]); onWipe(); toast("Everything cleared");
         }}>Clear all data</button>
       </div>
@@ -3331,9 +3481,28 @@ export default function App() {
   const [lg, setLg] = useState(null);
   const [tab, setTab] = useState("draft");
   const [toastMsg, setToastMsg] = useState("");
-  const [my, saveMy] = useMyTeam();
+  const [my, saveMy, myReady] = useMyTeam();
   const [pwa, setPwa] = useState(false);
   const saveTimer = useRef(null);
+  const [recoveryReady, setRecoveryReady] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    ensureRecoveryRestored().then(async () => {
+      if (!alive) return;
+      const active = recoveryGet(RECOVERY_ACTIVE);
+      if (active?.leagueId) {
+        const savedLeague = await store.get(`huddle:lg:${active.leagueId}`);
+        if (savedLeague && alive) {
+          setScreen("mock");
+          setLg(savedLeague);
+          setTab(active.tab || (draftDone(savedLeague) ? (savedLeague.season ? "season" : "team") : "draft"));
+        }
+      }
+      if (alive) setRecoveryReady(true);
+    });
+    return () => { alive = false; };
+  }, []);
 
   // iOS reports safe-area insets inconsistently in installed web apps,
   // so detect standalone directly and pin the padding ourselves.
@@ -3358,10 +3527,28 @@ export default function App() {
     return () => clearTimeout(saveTimer.current);
   }, [lg]);
 
+  useEffect(() => {
+    if (lg?.id && screen === "mock") recoverySet(RECOVERY_ACTIVE, { leagueId: lg.id, tab, at: Date.now() });
+  }, [lg?.id, tab, screen]);
+
   const openLeague = (l) => { setLg(l); setTab(draftDone(l) ? (l.season ? "season" : "team") : "draft"); };
-  const home = () => { if (lg) saveLeague(lg); setLg(null); setScreen("hub"); };
+  const closeLeague = async () => {
+    if (lg) await saveLeague(lg);
+    recoveryDel(RECOVERY_ACTIVE);
+    setLg(null);
+  };
+  const home = async () => {
+    if (lg) await saveLeague(lg);
+    recoveryDel(RECOVERY_ACTIVE);
+    setLg(null);
+    setScreen("hub");
+  };
 
   const TITLES = { mock: "Mock Season", trade: "Trade Help", draft: "Draft Help", settings: "Settings" };
+
+  if (!recoveryReady || !myReady) {
+    return <div className="hd"><style>{CSS}</style><div className="wrap"><div className="card"><div className="eyebrow">Huddle</div><h2 style={{ marginTop: 5 }}>Restoring your leagues…</h2><div className="mini">Checking the on-device recovery copy before the app opens.</div></div></div></div>;
+  }
 
   return (
     <div className={`hd${pwa ? " pwa" : ""}`} style={{ "--nudge": `${my.topPad || 0}px` }}>
@@ -3372,7 +3559,7 @@ export default function App() {
       {screen !== "hub" && (
         <>
           <div className="hdr">
-            <button className="chip" onClick={lg ? () => { saveLeague(lg); setLg(null); } : home}>← Back</button>
+            <button className="chip" onClick={lg ? closeLeague : home}>← Back</button>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div className="nm" style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                 {lg ? leagueHeaderLabel(lg) : TITLES[screen]}
@@ -3400,7 +3587,7 @@ export default function App() {
             )}
             {screen === "trade" && <TradeHelp my={my} save={saveMy} toast={toast} />}
             {screen === "draft" && <DraftHelp my={my} save={saveMy} toast={toast} />}
-            {screen === "settings" && <Settings my={my} save={saveMy} toast={toast} onWipe={() => setLg(null)} />}
+            {screen === "settings" && <Settings my={my} save={saveMy} toast={toast} onWipe={() => { recoveryDel(RECOVERY_ACTIVE); setLg(null); }} />}
           </div>
 
           {screen === "mock" && lg && (

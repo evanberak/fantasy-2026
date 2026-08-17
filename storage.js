@@ -4,7 +4,13 @@
    saved leagues survive a refresh. Same API either way. */
 
 export function installStorage() {
-  if (typeof window === "undefined" || window.storage) return;
+  if (typeof window === "undefined") return;
+
+  // Ask supporting browsers to treat Huddle's on-device data as persistent.
+  // This is best-effort; local saves still work if the browser declines.
+  try { window.navigator?.storage?.persist?.().catch?.(() => {}); } catch { }
+
+  if (window.storage) return;
 
   const KEY = (k, shared) => `huddle::${shared ? "shared" : "me"}::${k}`;
 
