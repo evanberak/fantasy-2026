@@ -1,0 +1,26 @@
+FANTASY GM 2026 — SIMPLE STREAMLIT DEPLOYMENT
+
+1. Unzip fantasy_gm_streamlit.zip.
+2. Put the contents in a new GitHub repository.
+   IMPORTANT: app.py must be at the repository root (not buried inside another folder).
+3. In Streamlit Community Cloud, create a new app from that GitHub repository.
+4. Main file path: app.py
+5. Deploy.
+
+OPTIONAL — ROSTER SCREENSHOT READING
+The app works without an OpenAI API key. Screenshot reading requires one.
+In your Streamlit app settings, add this under Secrets:
+
+OPENAI_API_KEY = "YOUR_KEY_HERE"
+OPENAI_VISION_MODEL = "gpt-5"
+
+Do not put your real API key in GitHub.
+
+CURRENT-SEASON DATA
+Fantasy GM attempts to refresh current NFL player names/teams from Sleeper at runtime.
+The built-in projections are intentionally demo estimates. For real draft decisions,
+open Data & Saves and import a current projection/ADP CSV. A template is included.
+
+SAVING
+Use Data & Saves > Download Fantasy GM Save. This exports the entire draft + season
+state to JSON. Upload that JSON later to continue the exact league.
