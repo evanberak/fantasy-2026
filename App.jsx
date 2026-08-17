@@ -1008,7 +1008,7 @@ export function advancePlayoffs(lg, state, matchups) {
 
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;700&display=swap');
-.hd { --ink:#0C1116; --panel:#141C24; --panel2:#1B252F; --line:#26323D;
+.hd { --safe-top:env(safe-area-inset-top,0px); --safe-bot:env(safe-area-inset-bottom,0px); --ink:#0C1116; --panel:#141C24; --panel2:#1B252F; --line:#26323D;
   --chalk:#E9EEF2; --mute:#8B9BA8; --first:#FFD400; --los:#3B7BFF;
   --red:#E2483A; --green:#22C48A;
   background:var(--ink); color:var(--chalk); font-family:Inter,system-ui,sans-serif;
@@ -1025,14 +1025,16 @@ const CSS = `
 /* signature: the first-down line */
 .fdl{position:relative}
 .fdl::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--first)}
-.hdr{position:sticky;top:0;padding-top:calc(10px + env(safe-area-inset-top));z-index:30;background:rgba(12,17,22,.94);backdrop-filter:blur(8px);
+.hdr{position:sticky;top:0;padding-top:calc(12px + var(--safe-top));z-index:30;background:rgba(12,17,22,.94);backdrop-filter:blur(8px);
   border-bottom:1px solid var(--line);padding:10px 14px;display:flex;align-items:center;gap:10px}
 .tabs{position:sticky;bottom:0;z-index:30;display:grid;grid-template-columns:repeat(5,1fr);
   background:rgba(12,17,22,.97);backdrop-filter:blur(8px);border-top:1px solid var(--line)}
-.tab{padding:9px 2px calc(11px + env(safe-area-inset-bottom));text-align:center;font-size:10px;letter-spacing:.08em;text-transform:uppercase;
+.tab{padding:10px 2px calc(12px + var(--safe-bot));text-align:center;font-size:10px;letter-spacing:.08em;text-transform:uppercase;
   color:var(--mute);font-weight:600;border-top:3px solid transparent}
 .tab.on{color:var(--first);border-top-color:var(--first)}
-.wrap{padding:14px 14px 20px;max-width:760px;margin:0 auto}
+.wrap{padding:14px 14px 24px;max-width:760px;margin:0 auto}
+.wrap.top{padding-top:calc(18px + var(--safe-top))}
+@media (display-mode:standalone){ .hd{--safe-top:max(env(safe-area-inset-top,0px),28px);--safe-bot:max(env(safe-area-inset-bottom,0px),12px)} }
 .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:13px;margin-bottom:11px}
 .card.tight{padding:0;overflow:hidden}
 .btn{background:var(--first);color:#101519;font-weight:700;padding:11px 14px;border-radius:7px;
@@ -1070,10 +1072,19 @@ const CSS = `
 .t-out{background:rgba(226,72,58,.16);color:var(--red)}
 .t-bye{background:rgba(139,155,168,.16);color:var(--mute)}
 .t-up{background:rgba(34,196,138,.16);color:var(--green)}
-.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(78px + env(safe-area-inset-bottom));z-index:80;background:var(--first);
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(80px + var(--safe-bot));z-index:80;background:var(--first);
   color:#101519;font-weight:700;padding:10px 16px;border-radius:99px;font-size:13px;max-width:90%}
 .mini{font-size:11.5px;color:var(--mute);line-height:1.5}
 .link{color:var(--first);font-weight:600;text-decoration:underline;text-underline-offset:2px}
+.hub{display:grid;grid-template-columns:1fr 1fr;gap:11px}
+.tile{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:15px 13px 14px;
+  text-align:left;min-height:152px;display:flex;flex-direction:column;position:relative;overflow:hidden}
+.tile::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--first);opacity:.85}
+.tile.b::before{background:var(--los)} .tile.g::before{background:var(--green)} .tile.m::before{background:var(--mute)}
+.tile h3{font-size:20px;line-height:.95;margin-bottom:6px}
+.tile .mini{flex:1}
+.tile .go{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--first);margin-top:9px}
+.tile.b .go{color:var(--los)} .tile.g .go{color:var(--green)} .tile.m .go{color:var(--mute)}
 @media (prefers-reduced-motion: no-preference){ .pop{animation:pop .18s ease-out} }
 @keyframes pop{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 `;
@@ -1157,7 +1168,7 @@ function parseJSON(txt) {
    HOME
    ============================================================ */
 
-function Home({ onOpen, onCreate }) {
+function MockHome({ onOpen, onCreate }) {
   const [saved, setSaved] = useState([]);
   const [cfg, setCfg] = useState({
     teams: 12, rounds: 15, ppr: 1, superflex: false, userSlot: 5, teamName: "My Team", name: "",
@@ -1175,14 +1186,12 @@ function Home({ onOpen, onCreate }) {
 
   return (
     <div className="wrap">
-      <div style={{ padding: "18px 0 20px" }}>
+      <div style={{ padding: "2px 0 16px" }}>
         <div className="eyebrow">2026 season · consensus ADP through Aug 10</div>
-        <h1 style={{ fontSize: 62, marginTop: 6, letterSpacing: "-.02em" }}>Huddle</h1>
-        <div className="fdl" style={{ paddingLeft: 12, marginTop: 12 }}>
-          <div className="mini" style={{ maxWidth: 420 }}>
-            Mock draft against seven distinct drafting personalities, then play the whole season out —
-            injuries, breakouts, FAAB bidding wars, and a trade market that pushes back.
-          </div>
+        <h1 style={{ fontSize: 34, marginTop: 5 }}>Mock Season</h1>
+        <div className="mini" style={{ marginTop: 7, maxWidth: 430 }}>
+          Draft against seven distinct personalities, then play the year out — injuries, breakouts,
+          bidding wars, and a trade market that pushes back.
         </div>
       </div>
 
@@ -2380,7 +2389,7 @@ function TradeFinder({ lg, toast }) {
 
 /* ---- screenshot roster ---- */
 
-function ShotFinder({ lg, toast }) {
+function ShotFinder({ lg, toast, my, save }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [found, setFound] = useState(null);
@@ -2466,8 +2475,16 @@ function ShotFinder({ lg, toast }) {
         </div>
       )}
 
-      {found && ids.length > 2 && !analysis && (
-        <button className="btn blue" onClick={analyze}>Find trades for this roster</button>
+      {found && ids.length > 2 && (
+        <>
+          {save && (
+            <button className="btn" style={{ marginBottom: 9 }} onClick={() => {
+              save({ ...my, ids });
+              toast(`Saved ${ids.length} players`);
+            }}>Save as my roster</button>
+          )}
+          {!analysis && <button className="btn blue" onClick={analyze}>Find trades for this roster</button>}
+        </>
       )}
 
       {analysis && (
@@ -2685,56 +2702,404 @@ function GMChat({ lg }) {
   );
 }
 
+
+/* ============================================================
+   REAL-TEAM MODE
+   Trade Help and Draft Help work on the roster you actually own,
+   with no mock league required. Saved separately from any league.
+   ============================================================ */
+
+export const VERSION = "1.1.0";
+const MY_KEY = "huddle:myteam";
+
+const DEFAULT_MY = { ids: [], teams: 12, ppr: 1, superflex: false, name: "My Team" };
+
+// a minimal league-shaped object so the engine works outside a mock draft
+function shellLeague(my) {
+  return {
+    id: "real", name: my.name,
+    settings: { teams: my.teams, rounds: 15, ppr: my.ppr, superflex: my.superflex, userSlot: 0, faab: 100, waiverMode: "faab" },
+    gms: [{ idx: 0, name: my.name, isUser: true }],
+    order: [], picks: [], rosters: { 0: my.ids }, season: null,
+  };
+}
+
+function useMyTeam() {
+  const [my, setMy] = useState(DEFAULT_MY);
+  const [ready, setReady] = useState(false);
+  useEffect(() => { store.get(MY_KEY).then((v) => { if (v) setMy({ ...DEFAULT_MY, ...v }); setReady(true); }); }, []);
+  const save = useCallback((next) => { setMy(next); store.set(MY_KEY, next); }, []);
+  return [my, save, ready];
+}
+
+/* ---- roster manager: the spine of real-team mode ---- */
+
+function MyRoster({ my, save, toast, compact }) {
+  const [pick, setPick] = useState(false);
+  const lg = shellLeague(my);
+  const values = useMemo(() => buildValues(lg, null), [my.ids.length, my.ppr, my.teams, my.superflex]);
+  const sorted = [...my.ids].sort((a, b) => values[b].ppg - values[a].ppg);
+
+  return (
+    <>
+      <div className="card">
+        <div className="row sp" style={{ marginBottom: compact ? 0 : 10 }}>
+          <div>
+            <div className="eyebrow">Your roster</div>
+            <div className="disp" style={{ fontSize: 24, marginTop: 3 }}>{my.ids.length} players</div>
+          </div>
+          <button className="chip on" onClick={() => setPick(true)}>+ Add player</button>
+        </div>
+        {!compact && (
+          <div className="grid3" style={{ marginTop: 4 }}>
+            <div>
+              <div className="eyebrow" style={{ marginBottom: 4 }}>Teams</div>
+              <select value={my.teams} onChange={(e) => save({ ...my, teams: +e.target.value })}>
+                {[8, 10, 12, 14].map((n) => <option key={n} value={n}>{n}</option>)}
+              </select>
+            </div>
+            <div>
+              <div className="eyebrow" style={{ marginBottom: 4 }}>Scoring</div>
+              <select value={my.ppr} onChange={(e) => save({ ...my, ppr: +e.target.value })}>
+                <option value={1}>PPR</option><option value={0.5}>Half</option><option value={0}>Std</option>
+              </select>
+            </div>
+            <div>
+              <div className="eyebrow" style={{ marginBottom: 4 }}>Format</div>
+              <select value={my.superflex ? "sf" : "std"} onChange={(e) => save({ ...my, superflex: e.target.value === "sf" })}>
+                <option value="std">1 QB</option><option value="sf">Superflex</option>
+              </select>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {my.ids.length > 0 && (
+        <div className="card tight">
+          {sorted.map((id) => (
+            <PlayerRow key={id} p={BY_ID[id]} sub={`${BY_ID[id].team} · Bye ${BY_ID[id].bye || "—"} · ${values[id].ppg.toFixed(1)} ppg`}
+              right={<button className="chip" onClick={() => save({ ...my, ids: my.ids.filter((x) => x !== id) })}>Remove</button>} />
+          ))}
+        </div>
+      )}
+
+      <PlayerPicker open={pick} onClose={() => setPick(false)} title="Add to your roster"
+        pool={PLAYERS.filter((p) => !my.ids.includes(p.id))}
+        onPick={(p) => { save({ ...my, ids: [...my.ids, p.id] }); toast(`${p.name} added`); }} />
+    </>
+  );
+}
+
+/* ---- TRADE HELP ---- */
+
+function TradeHelp({ my, save, toast }) {
+  const [mode, setMode] = useState("shot");
+  const lg = shellLeague(my);
+  return (
+    <div className="wrap">
+      <div className="scroll-x" style={{ marginBottom: 12 }}>
+        {[["shot", "Screenshot"], ["calc", "Analyzer"], ["find", "Find targets"], ["roster", "My roster"]].map(([k, l]) => (
+          <button key={k} className={`chip ${mode === k ? "on" : ""}`} onClick={() => setMode(k)}>{l}</button>
+        ))}
+      </div>
+      {mode === "shot" && <ShotFinder lg={lg} toast={toast} my={my} save={save} />}
+      {mode === "calc" && <TradeCalc lg={lg} />}
+      {mode === "find" && (my.ids.length > 2
+        ? <RealTradeFinder my={my} />
+        : <div className="card"><div className="mini">Add your roster first — screenshot it or tap "My roster" to build it by hand.</div></div>)}
+      {mode === "roster" && <MyRoster my={my} save={save} toast={toast} />}
+    </div>
+  );
+}
+
+// no real counterparties outside a mock league, so build a market from the pool
+function RealTradeFinder({ my }) {
+  const lg = shellLeague(my);
+  const { values, trades, weak } = useMemo(() => {
+    const values = buildValues(lg, null);
+    const mine = new Set(my.ids);
+    const pool = PLAYERS.filter((p) => !mine.has(p.id) && p.adp <= 190);
+    const rosters = {};
+    const n = Math.max(3, my.teams - 1);
+    for (let i = 0; i < n; i++) rosters[i + 100] = [];
+    pool.forEach((p, i) => rosters[(i % n) + 100].push(p.id));
+    const fake = { ...lg, settings: { ...lg.settings, userSlot: -1 } };
+    return { values, trades: findTrades(fake, my.ids, values, rosters), weak: weakestPosFromIds(my.ids, values) };
+  }, [my]);
+
+  return (
+    <>
+      <div className="card fdl" style={{ paddingLeft: 15 }}>
+        <div className="eyebrow">Biggest hole</div>
+        <h2 style={{ fontSize: 26, margin: "5px 0 7px" }}>{weak}</h2>
+        <div className="mini">
+          Every deal below sends out a spot where you already have starters banked. Values are rest-of-season
+          points over replacement for a {my.teams}-team {my.ppr === 1 ? "PPR" : my.ppr === 0.5 ? "half-PPR" : "standard"} league.
+        </div>
+      </div>
+      {trades.length === 0 && <div className="card"><div className="mini">No clean fits — your roster is balanced enough that every deal costs about what it returns. Work the wire instead.</div></div>}
+      {trades.map((t, i) => (
+        <div key={i} className="card">
+          <div className="row sp" style={{ marginBottom: 9 }}>
+            <div className="eyebrow">Target {i + 1}</div>
+            <div className="chip on">{Math.round(t.ratio * 100)}% value back</div>
+          </div>
+          <div className="grid2" style={{ marginBottom: 9 }}>
+            <div>
+              <div className="eyebrow" style={{ marginBottom: 4 }}>Send</div>
+              {t.give.map((id) => <div key={id} className="mini" style={{ color: "var(--chalk)" }}>{BY_ID[id].name} <span style={{ color: "var(--mute)" }}>{BY_ID[id].pos}</span></div>)}
+            </div>
+            <div>
+              <div className="eyebrow" style={{ marginBottom: 4 }}>Ask for</div>
+              {t.getIds.map((id) => <div key={id} className="mini" style={{ color: "var(--chalk)" }}>{BY_ID[id].name} <span style={{ color: "var(--mute)" }}>{BY_ID[id].pos}</span></div>)}
+            </div>
+          </div>
+          <div className="mini">You're deep at {BY_ID[t.give[0]].pos} and thin at {weak}. Pitch it to whoever in your league is short {BY_ID[t.give[0]].pos}.</div>
+        </div>
+      ))}
+    </>
+  );
+}
+
+/* ---- DRAFT HELP ---- */
+
+function DraftHelp({ my, save, toast }) {
+  const [mode, setMode] = useState("vs");
+  const lg = shellLeague(my);
+  return (
+    <div className="wrap">
+      <div className="scroll-x" style={{ marginBottom: 12 }}>
+        {[["vs", "A over B"], ["radar", "Value radar"], ["gm", "Ask your GM"], ["roster", "My roster"]].map(([k, l]) => (
+          <button key={k} className={`chip ${mode === k ? "on" : ""}`} onClick={() => setMode(k)}>{l}</button>
+        ))}
+      </div>
+      {mode === "vs" && <Versus lg={lg} />}
+      {mode === "radar" && <Radar lg={lg} />}
+      {mode === "gm" && <GMChat lg={lg} />}
+      {mode === "roster" && <MyRoster my={my} save={save} toast={toast} />}
+    </div>
+  );
+}
+
+/* ---- SETTINGS ---- */
+
+function Settings({ my, save, toast, onWipe }) {
+  const [leagues, setLeagues] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const fileRef = useRef(null);
+  useEffect(() => { store.get("huddle:index").then((v) => setLeagues(v || [])); }, []);
+
+  const refresh = async () => {
+    setBusy(true);
+    try {
+      if ("caches" in window) { const ks = await caches.keys(); await Promise.all(ks.map((k) => caches.delete(k))); }
+      if (navigator.serviceWorker?.getRegistrations) {
+        const rs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(rs.map((r) => r.unregister()));
+      }
+    } catch { }
+    window.location.reload();
+  };
+
+  const exportAll = async () => {
+    const idx = (await store.get("huddle:index")) || [];
+    const lgs = {};
+    for (const m of idx) lgs[m.id] = await store.get(`huddle:lg:${m.id}`);
+    const blob = new Blob([JSON.stringify({ version: VERSION, savedAt: Date.now(), myTeam: my, leagues: lgs }, null, 2)],
+      { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `huddle-save-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click(); URL.revokeObjectURL(a.href);
+    toast("Save downloaded");
+  };
+
+  const importAll = async (file) => {
+    if (!file) return;
+    try {
+      const data = JSON.parse(await file.text());
+      if (data.myTeam) save({ ...DEFAULT_MY, ...data.myTeam });
+      if (data.leagues) {
+        const idx = [];
+        for (const [id, lg] of Object.entries(data.leagues)) {
+          if (!lg) continue;
+          await store.set(`huddle:lg:${id}`, lg);
+          idx.push({ id, name: lg.name, teams: lg.settings.teams, at: Date.now(), phase: "Imported" });
+        }
+        await store.set("huddle:index", idx); setLeagues(idx);
+      }
+      toast("Save imported");
+    } catch { toast("That file didn't parse"); }
+  };
+
+  return (
+    <div className="wrap">
+      <div className="card fdl m" style={{ paddingLeft: 15 }}>
+        <div className="eyebrow">Version</div>
+        <h1 className="num" style={{ fontSize: 38, margin: "4px 0 6px" }}>{VERSION}</h1>
+        <div className="mini">2026 player pool · consensus ADP through Aug 10 · real 2026 byes</div>
+        <button className="btn alt" style={{ marginTop: 12 }} disabled={busy} onClick={refresh}>
+          {busy ? "Refreshing…" : "Fetch new version"}
+        </button>
+        <div className="mini" style={{ marginTop: 7 }}>Clears the cached app and reloads. Your saved data stays put.</div>
+      </div>
+
+      <div className="card">
+        <h2 style={{ fontSize: 19, marginBottom: 9 }}>Save & restore</h2>
+        <div className="mini" style={{ marginBottom: 11 }}>
+          Everything lives in this browser only. Export before you clear site data, switch phones, or reinstall —
+          the file holds your roster and every mock league.
+        </div>
+        <div className="grid2">
+          <button className="btn alt" onClick={exportAll}>Download save</button>
+          <button className="btn alt" onClick={() => fileRef.current?.click()}>Import save</button>
+        </div>
+        <input ref={fileRef} type="file" accept="application/json" style={{ display: "none" }}
+          onChange={(e) => importAll(e.target.files?.[0])} />
+      </div>
+
+      <div className="card">
+        <h2 style={{ fontSize: 19, marginBottom: 9 }}>Stored data</h2>
+        <div className="row sp mini" style={{ marginBottom: 5 }}>
+          <span>Your roster</span><b style={{ color: "var(--chalk)" }}>{my.ids.length} players</b>
+        </div>
+        <div className="row sp mini" style={{ marginBottom: 11 }}>
+          <span>Mock leagues</span><b style={{ color: "var(--chalk)" }}>{leagues.length}</b>
+        </div>
+        <button className="btn alt" style={{ color: "var(--red)" }} onClick={async () => {
+          if (!window.confirm("Delete your roster and every saved league? This can't be undone.")) return;
+          const idx = (await store.get("huddle:index")) || [];
+          for (const m of idx) await store.del(`huddle:lg:${m.id}`);
+          await store.set("huddle:index", []); await store.del(MY_KEY);
+          save(DEFAULT_MY); setLeagues([]); onWipe(); toast("Everything cleared");
+        }}>Clear all data</button>
+      </div>
+
+      <div className="card">
+        <h2 style={{ fontSize: 19, marginBottom: 9 }}>About the numbers</h2>
+        <div className="mini">
+          Projections are curve-derived from consensus ADP, not scraped expert projections — ranking order is
+          accurate, absolute point totals are estimates. Byes are the real 2026 schedule: six teams are off in
+          Week 11, and nobody is off in Week 12.
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ============================================================
    APP SHELL
    ============================================================ */
 
+function Hub({ go, my }) {
+  const tiles = [
+    { k: "mock", cls: "", h: "Mock Season", d: "Snake draft against seven personalities, then play all 17 weeks — injuries, waivers, playoffs.", go: "Draft now" },
+    { k: "trade", cls: "b", h: "Trade Help", d: "Screenshot your roster, analyze any offer, and find deals both sides would actually take.", go: "Open" },
+    { k: "draft", cls: "g", h: "Draft Help", d: "Player A over player B with the reasoning, value radar, and a co-GM that knows your team.", go: "Open" },
+    { k: "settings", cls: "m", h: "Settings", d: `Version ${VERSION} · save and restore your roster and leagues.`, go: "Open" },
+  ];
+  return (
+    <div className="wrap top">
+      <div style={{ padding: "10px 0 20px" }}>
+        <h1 style={{ fontSize: 64, letterSpacing: "-.02em", lineHeight: .9 }}>Huddle</h1>
+        <div className="row" style={{ gap: 9, marginTop: 10 }}>
+          <div style={{ width: 34, height: 3, background: "var(--first)" }} />
+          <div className="eyebrow">2026 fantasy football</div>
+        </div>
+      </div>
+      <div className="hub">
+        {tiles.map((t) => (
+          <button key={t.k} className={`tile ${t.cls}`} onClick={() => go(t.k)}>
+            <h3>{t.h}</h3>
+            <div className="mini">{t.d}</div>
+            <div className="go">{t.go} →</div>
+          </button>
+        ))}
+      </div>
+      {my.ids.length > 0 && (
+        <div className="card" style={{ marginTop: 12 }}>
+          <div className="row sp">
+            <div>
+              <div className="eyebrow">Saved roster</div>
+              <div className="mini" style={{ marginTop: 3 }}>{my.ids.length} players · {my.teams}-team {my.ppr === 1 ? "PPR" : my.ppr === 0.5 ? "half PPR" : "standard"}</div>
+            </div>
+            <button className="chip on" onClick={() => go("trade")}>Trade help</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function App() {
+  const [screen, setScreen] = useState("hub");
   const [lg, setLg] = useState(null);
   const [tab, setTab] = useState("draft");
   const [toastMsg, setToastMsg] = useState("");
+  const [my, saveMy] = useMyTeam();
   const saveTimer = useRef(null);
 
-  const toast = useCallback((m) => {
-    setToastMsg(m);
-    setTimeout(() => setToastMsg(""), 1800);
-  }, []);
+  const toast = useCallback((m) => { setToastMsg(m); setTimeout(() => setToastMsg(""), 1800); }, []);
 
   useEffect(() => {
     if (!lg) return;
     clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => { saveLeague(lg); }, 700);
+    saveTimer.current = setTimeout(() => saveLeague(lg), 700);
     return () => clearTimeout(saveTimer.current);
   }, [lg]);
 
-  const open = (l) => { setLg(l); setTab(draftDone(l) ? (l.season ? "season" : "team") : "draft"); };
+  const openLeague = (l) => { setLg(l); setTab(draftDone(l) ? (l.season ? "season" : "team") : "draft"); };
+  const home = () => { if (lg) saveLeague(lg); setLg(null); setScreen("hub"); };
+
+  const TITLES = { mock: "Mock Season", trade: "Trade Help", draft: "Draft Help", settings: "Settings" };
 
   return (
     <div className="hd">
       <style>{CSS}</style>
-      {!lg ? (
-        <Home onOpen={open} onCreate={(l) => { setLg(l); setTab("draft"); }} />
-      ) : (
+
+      {screen === "hub" && <Hub go={setScreen} my={my} />}
+
+      {screen !== "hub" && (
         <>
           <div className="hdr">
-            <button className="chip" onClick={() => { saveLeague(lg); setLg(null); }}>← Leagues</button>
+            <button className="chip" onClick={lg ? () => { saveLeague(lg); setLg(null); } : home}>← Back</button>
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div className="nm" style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{lg.name}</div>
-              <div className="sub">{lg.season ? (lg.season.champion != null ? "Season complete" : `Week ${lg.season.week}`) : draftDone(lg) ? "Draft complete" : `Pick ${lg.picks.length + 1} of ${lg.order.length}`}</div>
+              <div className="nm" style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                {lg ? lg.name : TITLES[screen]}
+              </div>
+              <div className="sub">
+                {lg
+                  ? (lg.season ? (lg.season.champion != null ? "Season complete" : `Week ${lg.season.week}`)
+                    : draftDone(lg) ? "Draft complete" : `Pick ${lg.picks.length + 1} of ${lg.order.length}`)
+                  : screen === "mock" ? "Pick up where you left off" : `Huddle ${VERSION}`}
+              </div>
             </div>
+            {lg && <button className="chip" onClick={home}>Home</button>}
           </div>
+
           <div style={{ paddingBottom: 8 }}>
-            {tab === "draft" && <DraftRoom lg={lg} setLg={setLg} toast={toast} />}
-            {tab === "team" && <TeamView lg={lg} setLg={setLg} toast={toast} />}
-            {tab === "season" && <SeasonView lg={lg} setLg={setLg} toast={toast} />}
-            {tab === "trades" && <TradesView lg={lg} toast={toast} />}
-            {tab === "tools" && <ToolsView lg={lg} toast={toast} />}
+            {screen === "mock" && !lg && <MockHome onOpen={openLeague} onCreate={(l) => { setLg(l); setTab("draft"); }} />}
+            {screen === "mock" && lg && (
+              <>
+                {tab === "draft" && <DraftRoom lg={lg} setLg={setLg} toast={toast} />}
+                {tab === "team" && <TeamView lg={lg} setLg={setLg} toast={toast} />}
+                {tab === "season" && <SeasonView lg={lg} setLg={setLg} toast={toast} />}
+                {tab === "trades" && <TradesView lg={lg} toast={toast} />}
+                {tab === "tools" && <ToolsView lg={lg} toast={toast} />}
+              </>
+            )}
+            {screen === "trade" && <TradeHelp my={my} save={saveMy} toast={toast} />}
+            {screen === "draft" && <DraftHelp my={my} save={saveMy} toast={toast} />}
+            {screen === "settings" && <Settings my={my} save={saveMy} toast={toast} onWipe={() => setLg(null)} />}
           </div>
-          <div className="tabs">
-            {[["draft", "Draft"], ["team", "Team"], ["season", "Season"], ["trades", "Trades"], ["tools", "Tools"]].map(([k, l]) => (
-              <button key={k} className={`tab ${tab === k ? "on" : ""}`} onClick={() => setTab(k)}>{l}</button>
-            ))}
-          </div>
+
+          {screen === "mock" && lg && (
+            <div className="tabs">
+              {[["draft", "Draft"], ["team", "Team"], ["season", "Season"], ["trades", "Trades"], ["tools", "Tools"]].map(([k, l]) => (
+                <button key={k} className={`tab ${tab === k ? "on" : ""}`} onClick={() => setTab(k)}>{l}</button>
+              ))}
+            </div>
+          )}
         </>
       )}
       <Toast msg={toastMsg} />
