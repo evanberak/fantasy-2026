@@ -958,6 +958,51 @@ export function generateOffer(lg, state) {
   return { gm: partner.idx, wants: [target], gives: bestPkg, note: `${partner.name} needs ${need} help.` };
 }
 
+// AI response to a trade the user proposes. They weigh raw value AND roster fit —
+// a team stacked at RB won't take a fourth one no matter how good the value is.
+export function evaluateOffer(lg, state, partnerIdx, iSend, iGet) {
+  const values = buildValues(lg, state);
+  const v = tradeVerdict(iSend, iGet, values);
+  const theirNeed = weakestPos(lg, partnerIdx, values);
+  const incomingHelps = iSend.some((id) => BY_ID[id].pos === theirNeed);
+  const theirRoster = lg.rosters[partnerIdx];
+
+  // do the players they'd receive actually crack their lineup?
+  const upgrade = iSend.reduce((best, id) => {
+    const p = BY_ID[id];
+    const atPos = theirRoster.filter((x) => BY_ID[x].pos === p.pos)
+      .map((x) => values[x].ppg).sort((a, b) => b - a);
+    const startersAt = p.pos === "RB" || p.pos === "WR" ? 2 : 1;
+    const bar = atPos[startersAt] ?? 0;
+    return Math.max(best, values[id].ppg - bar);
+  }, 0);
+
+  // v.pct > 0 means the user is sending more value than receiving
+  let score = v.pct;
+  if (incomingHelps) score += 7;
+  score += Math.min(7, upgrade * 1.0);
+  if (iGet.length > iSend.length) score -= 6;        // they dislike losing depth for one piece
+  if (theirRoster.length - iGet.length + iSend.length < 13) score -= 14;
+
+  const accept = score > 13;
+  const close = !accept && score > 4;
+  let reply;
+  if (accept) {
+    reply = incomingHelps
+      ? `Done. I need ${theirNeed} help and this gets me there.`
+      : `I'll take that — the value works for me.`;
+  } else if (close) {
+    reply = `Close, but not quite. Sweeten it slightly and I'm in.`;
+  } else if (v.pct < -18) {
+    reply = `You're asking for way too much. Not happening.`;
+  } else {
+    reply = incomingHelps
+      ? `I like the fit but the price is too high.`
+      : `That doesn't fill a hole for me. I'm set at ${BY_ID[iSend[0]].pos}.`;
+  }
+  return { accept, close, reply, verdict: v, theirNeed, score };
+}
+
 export function weakestPos(lg, gmIdx, values) {
   const roster = lg.rosters[gmIdx].map((id) => BY_ID[id]);
   const strength = {};
@@ -1008,7 +1053,7 @@ export function advancePlayoffs(lg, state, matchups) {
 
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;700&display=swap');
-.hd { --safe-top:env(safe-area-inset-top,0px); --safe-bot:env(safe-area-inset-bottom,0px); --ink:#0C1116; --panel:#141C24; --panel2:#1B252F; --line:#26323D;
+.hd { --safe-top:max(env(safe-area-inset-top,0px),10px); --safe-bot:max(env(safe-area-inset-bottom,0px),8px); --ink:#0C1116; --panel:#141C24; --panel2:#1B252F; --line:#26323D;
   --chalk:#E9EEF2; --mute:#8B9BA8; --first:#FFD400; --los:#3B7BFF;
   --red:#E2483A; --green:#22C48A;
   background:var(--ink); color:var(--chalk); font-family:Inter,system-ui,sans-serif;
@@ -1027,14 +1072,22 @@ const CSS = `
 .fdl::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--first)}
 .hdr{position:sticky;top:0;padding-top:calc(12px + var(--safe-top));z-index:30;background:rgba(12,17,22,.94);backdrop-filter:blur(8px);
   border-bottom:1px solid var(--line);padding:10px 14px;display:flex;align-items:center;gap:10px}
-.tabs{position:sticky;bottom:0;z-index:30;display:grid;grid-template-columns:repeat(5,1fr);
-  background:rgba(12,17,22,.97);backdrop-filter:blur(8px);border-top:1px solid var(--line)}
-.tab{padding:10px 2px calc(12px + var(--safe-bot));text-align:center;font-size:10px;letter-spacing:.08em;text-transform:uppercase;
-  color:var(--mute);font-weight:600;border-top:3px solid transparent}
-.tab.on{color:var(--first);border-top-color:var(--first)}
+.tabs{position:sticky;bottom:0;z-index:30;display:grid;grid-template-columns:repeat(5,1fr);gap:4px;
+  background:rgba(10,14,19,.98);backdrop-filter:blur(14px);border-top:1px solid var(--line);
+  padding:8px 8px calc(8px + var(--safe-bot))}
+.tab{padding:9px 2px 8px;text-align:center;font-size:11px;letter-spacing:.05em;text-transform:uppercase;
+  color:var(--mute);font-weight:700;border-radius:10px;display:flex;flex-direction:column;align-items:center;gap:4px;
+  font-family:'Barlow Condensed',sans-serif;line-height:1}
+.tab .dot{width:20px;height:20px;border-radius:6px;background:var(--line);display:block;position:relative}
+.tab .dot::after{content:'';position:absolute;inset:5px;border-radius:2px;background:var(--mute)}
+.tab.on{color:#101519;background:var(--first)}
+.tab.on .dot{background:rgba(16,21,25,.22)} .tab.on .dot::after{background:#101519}
+.tab .badge{position:absolute;top:-4px;right:-6px;min-width:16px;height:16px;border-radius:99px;background:var(--red);
+  color:#fff;font-size:9.5px;font-weight:700;display:grid;place-items:center;padding:0 4px;font-family:Inter,sans-serif}
 .wrap{padding:14px 14px 24px;max-width:760px;margin:0 auto}
 .wrap.top{padding-top:calc(18px + var(--safe-top))}
-@media (display-mode:standalone){ .hd{--safe-top:max(env(safe-area-inset-top,0px),28px);--safe-bot:max(env(safe-area-inset-bottom,0px),12px)} }
+@media (display-mode:standalone){ .hd{--safe-top:max(env(safe-area-inset-top,0px),56px);--safe-bot:max(env(safe-area-inset-bottom,0px),20px)} }
+.hd.pwa{--safe-top:max(env(safe-area-inset-top,0px),56px);--safe-bot:max(env(safe-area-inset-bottom,0px),20px)}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:13px;margin-bottom:11px}
 .card.tight{padding:0;overflow:hidden}
 .btn{background:var(--first);color:#101519;font-weight:700;padding:11px 14px;border-radius:7px;
@@ -1062,6 +1115,17 @@ const CSS = `
 .bar{height:5px;background:var(--panel2);border-radius:99px;overflow:hidden}
 .bar>i{display:block;height:100%;background:var(--first)}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.act{display:flex;align-items:center;gap:12px;width:100%;background:var(--panel);border:1px solid var(--line);
+  border-radius:12px;padding:14px 13px;margin-bottom:9px;text-align:left;position:relative;overflow:hidden}
+.act::before{content:'';position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--first)}
+.act.b::before{background:var(--los)} .act.g::before{background:var(--green)} .act.r::before{background:var(--red)}
+.act .ico{width:38px;height:38px;border-radius:10px;background:var(--panel2);display:grid;place-items:center;flex:none;
+  font-family:'Barlow Condensed',sans-serif;font-size:15px;font-weight:700;color:var(--first);letter-spacing:.02em}
+.act.b .ico{color:var(--los)} .act.g .ico{color:var(--green)} .act.r .ico{color:var(--red)}
+.act h4{font-family:'Barlow Condensed',sans-serif;font-size:18px;text-transform:uppercase;margin:0 0 2px;letter-spacing:.02em}
+.act .arw{color:var(--mute);font-size:20px;flex:none}
+.pill{display:inline-block;padding:2px 7px;border-radius:99px;background:var(--first);color:#101519;
+  font-size:10px;font-weight:700;margin-left:6px}
 .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
 .stat{background:var(--panel2);border-radius:8px;padding:9px;text-align:center}
 .stat b{display:block;font-family:'Barlow Condensed',sans-serif;font-size:24px;line-height:1;margin-bottom:3px}
@@ -1732,7 +1796,7 @@ function Empty({ text }) {
    SEASON
    ============================================================ */
 
-function SeasonView({ lg, setLg, toast }) {
+function SeasonView({ lg, setLg, toast, setTab }) {
   const u = lg.settings.userSlot;
   const s = lg.season;
   const [busy, setBusy] = useState(false);
@@ -1770,6 +1834,7 @@ function SeasonView({ lg, setLg, toast }) {
   })();
 
   const values = buildValues(lg, s);
+  const faabMode = lg.settings.waiverMode !== "priority";
 
   const advance = () => {
     setBusy(true);
@@ -1882,9 +1947,9 @@ function SeasonView({ lg, setLg, toast }) {
           <h1 style={{ fontSize: 28, marginTop: 3 }}>{done ? "Final" : `Week ${s.week}`}</h1>
         </div>
         <div className="row" style={{ gap: 6 }}>
-          {["hub", "recap", "standings", "wire"].map((v) => (
+          {["hub", "recap", "standings", "wire", "trade"].map((v) => (
             <button key={v} className={`chip ${view === v ? "on" : ""}`} onClick={() => setView(v)}>
-              {v === "hub" ? "Hub" : v === "recap" ? "Scores" : v === "standings" ? "Table" : "Wire"}
+              {v === "hub" ? "Hub" : v === "recap" ? "Scores" : v === "standings" ? "Table" : v === "wire" ? "Wire" : "Trade"}
             </button>
           ))}
         </div>
@@ -1897,10 +1962,49 @@ function SeasonView({ lg, setLg, toast }) {
           {s.tradeOffer && <OfferCard lg={lg} setLg={setLg} values={values} toast={toast} />}
           {myMatch ? <MatchPreview lg={lg} s={s} values={values} pair={myMatch} /> :
             <div className="card"><div className="mini">You're not in this round of the playoffs. Sim ahead to see who takes the title.</div></div>}
-          <button className="btn" disabled={busy} onClick={advance} style={{ marginBottom: 9 }}>
-            {busy ? "Simulating…" : `Sim week ${s.week}`}
+
+          <div className="eyebrow" style={{ margin: "16px 0 8px" }}>Before you sim</div>
+
+          <button className="act" onClick={() => setTab && setTab("team")}>
+            <div className="ico">LU</div>
+            <div style={{ flex: 1 }}>
+              <h4>Set lineup</h4>
+              <div className="mini">{lineupWarn(lg, s, values) || "Starters look good for this week"}</div>
+            </div>
+            <div className="arw">›</div>
           </button>
-          <div className="grid2">
+
+          <button className="act b" onClick={() => setView("wire")}>
+            <div className="ico">W</div>
+            <div style={{ flex: 1 }}>
+              <h4>Waiver wire {claims.length > 0 && <span className="pill">{claims.length} queued</span>}</h4>
+              <div className="mini">
+                {faabMode ? `$${s.faab[u]} left · ` : `Priority #${s.waiverOrder.indexOf(u) + 1} · `}
+                {topFA(lg, s)} is the top add
+              </div>
+            </div>
+            <div className="arw">›</div>
+          </button>
+
+          <button className="act g" onClick={() => setView("trade")}>
+            <div className="ico">T</div>
+            <div style={{ flex: 1 }}>
+              <h4>Propose a trade</h4>
+              <div className="mini">Build an offer to any of the {lg.settings.teams - 1} other teams and hear back</div>
+            </div>
+            <div className="arw">›</div>
+          </button>
+
+          <button className="act r" disabled={busy} onClick={advance} style={{ marginTop: 4 }}>
+            <div className="ico">▶</div>
+            <div style={{ flex: 1 }}>
+              <h4>{busy ? "Simulating…" : `Sim week ${s.week}`}</h4>
+              <div className="mini">Locks lineups, scores every game, processes waivers</div>
+            </div>
+            <div className="arw">›</div>
+          </button>
+
+          <div className="grid2" style={{ marginTop: 4 }}>
             <button className="btn alt" disabled={busy} onClick={simRest}>Sim to the end</button>
             <button className="btn alt" onClick={runOdds}>Playoff odds</button>
           </div>
@@ -1930,7 +2034,140 @@ function SeasonView({ lg, setLg, toast }) {
         <WireView lg={lg} s={s} values={values} claims={claims} setClaims={setClaims}
           claimFor={claimFor} setClaimFor={setClaimFor} toast={toast} />
       )}
+
+      {view === "trade" && <TradeDesk lg={lg} setLg={setLg} values={values} toast={toast} />}
     </div>
+  );
+}
+
+// plain-language warning for the lineup action row
+function lineupWarn(lg, s, values) {
+  const u = lg.settings.userSlot;
+  const lu = s.lineups[s.week];
+  if (!lu) return "Auto-set — tap to review and change it";
+  const bad = lu.filter((id) => id && (BY_ID[id].bye === s.week || s.injuries[id] > 0));
+  if (bad.length) return `${bad.length} starter${bad.length > 1 ? "s" : ""} on bye or injured — fix it`;
+  const empty = lu.filter((x) => !x).length;
+  if (empty) return `${empty} empty slot${empty > 1 ? "s" : ""} scoring zero`;
+  return null;
+}
+function topFA(lg, s) {
+  const b = waiverBoard(lg, s, 1);
+  return b.length ? BY_ID[b[0].p.id].name : "nobody";
+}
+
+/* ---- ESPN-style trade desk: build an offer, get a real answer ---- */
+
+function TradeDesk({ lg, setLg, values, toast }) {
+  const u = lg.settings.userSlot;
+  const [partner, setPartner] = useState(null);
+  const [mine, setMine] = useState([]);
+  const [theirs, setTheirs] = useState([]);
+  const [reply, setReply] = useState(null);
+
+  const others = lg.gms.filter((g) => !g.isUser);
+  const toggle = (arr, setArr, id) => setArr(arr.includes(id) ? arr.filter((x) => x !== id) : [...arr, id]);
+
+  if (partner == null) {
+    return (
+      <>
+        <div className="card">
+          <div className="eyebrow">Step 1</div>
+          <h2 style={{ fontSize: 21, margin: "5px 0 6px" }}>Pick a trade partner</h2>
+          <div className="mini">Each team's biggest hole is listed — target the one that needs what you have spare.</div>
+        </div>
+        {others.map((g) => {
+          const need = weakestPos(lg, g.idx, values);
+          const rec = lg.season.record[g.idx];
+          return (
+            <button key={g.idx} className="act b" onClick={() => { setPartner(g.idx); setMine([]); setTheirs([]); setReply(null); }}>
+              <div className="ico">{need}</div>
+              <div style={{ flex: 1 }}>
+                <h4>{g.name}</h4>
+                <div className="mini">{rec.w}-{rec.l} · needs {need} help</div>
+              </div>
+              <div className="arw">›</div>
+            </button>
+          );
+        })}
+      </>
+    );
+  }
+
+  const v = tradeVerdict(mine, theirs, values);
+  const canSend = mine.length > 0 && theirs.length > 0;
+
+  const send = () => {
+    const res = evaluateOffer(lg, lg.season, partner, mine, theirs);
+    setReply(res);
+    if (res.accept) {
+      setLg((prev) => {
+        const n = JSON.parse(JSON.stringify(prev));
+        n.rosters[u] = n.rosters[u].filter((x) => !mine.includes(x)).concat(theirs);
+        n.rosters[partner] = n.rosters[partner].filter((x) => !theirs.includes(x)).concat(mine);
+        n.season.log.push({ week: n.season.week, type: "trade", gm: partner, out: mine, in: theirs });
+        return n;
+      });
+      toast("Trade accepted");
+    }
+  };
+
+  const Col = ({ label, ids, sel, setSel }) => (
+    <div className="card tight" style={{ marginBottom: 9 }}>
+      <div className="eyebrow" style={{ padding: "11px 11px 7px" }}>{label}</div>
+      {ids.slice().sort((a, b) => values[b].tv - values[a].tv).map((id) => {
+        const on = sel.includes(id);
+        return (
+          <div key={id} className="plr" onClick={() => { setSel(sel.includes(id) ? sel.filter((x) => x !== id) : [...sel, id]); setReply(null); }}
+            style={{ cursor: "pointer", background: on ? "rgba(255,212,0,.10)" : undefined }}>
+            <div className={POSC(BY_ID[id].pos)}>{BY_ID[id].pos === "DST" ? "DEF" : BY_ID[id].pos}</div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div className="nm">{BY_ID[id].name}</div>
+              <div className="sub">{BY_ID[id].team} · {values[id].ppg.toFixed(1)} ppg · value {values[id].tv}</div>
+            </div>
+            <div className={`chip ${on ? "on" : ""}`}>{on ? "Added" : "Add"}</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+
+  return (
+    <>
+      <div className="row sp" style={{ marginBottom: 10 }}>
+        <div>
+          <div className="eyebrow">Offer to</div>
+          <h2 style={{ fontSize: 22, marginTop: 3 }}>{lg.gms[partner].name}</h2>
+        </div>
+        <button className="chip" onClick={() => setPartner(null)}>Change team</button>
+      </div>
+
+      <Col label="You send" ids={lg.rosters[u]} sel={mine} setSel={setMine} />
+      <Col label={`You get from ${lg.gms[partner].name}`} ids={lg.rosters[partner]} sel={theirs} setSel={setTheirs} />
+
+      {canSend && (
+        <div className="card fdl" style={{ paddingLeft: 15 }}>
+          <div className="eyebrow">Value check</div>
+          <h2 style={{ fontSize: 21, margin: "5px 0 9px", color: v.pct < -8 ? "var(--green)" : v.pct > 8 ? "var(--red)" : "var(--first)" }}>
+            {v.verdict}
+          </h2>
+          <div className="row sp mini"><span>Out {v.a}</span><span>In {v.b}</span></div>
+        </div>
+      )}
+
+      {reply && (
+        <div className="card" style={{ borderColor: reply.accept ? "var(--green)" : reply.close ? "var(--first)" : "var(--red)" }}>
+          <div className="eyebrow" style={{ color: reply.accept ? "var(--green)" : reply.close ? "var(--first)" : "var(--red)" }}>
+            {lg.gms[partner].name} {reply.accept ? "accepted" : reply.close ? "countered" : "declined"}
+          </div>
+          <div className="mini" style={{ marginTop: 6, color: "var(--chalk)" }}>"{reply.reply}"</div>
+        </div>
+      )}
+
+      <button className="btn" disabled={!canSend || reply?.accept} onClick={send}>
+        {reply && !reply.accept ? "Send revised offer" : "Send offer"}
+      </button>
+    </>
   );
 }
 
@@ -2709,7 +2946,7 @@ function GMChat({ lg }) {
    with no mock league required. Saved separately from any league.
    ============================================================ */
 
-export const VERSION = "1.1.0";
+export const VERSION = "1.2.0";
 const MY_KEY = "huddle:myteam";
 
 const DEFAULT_MY = { ids: [], teams: 12, ppr: 1, superflex: false, name: "My Team" };
@@ -3037,7 +3274,22 @@ export default function App() {
   const [tab, setTab] = useState("draft");
   const [toastMsg, setToastMsg] = useState("");
   const [my, saveMy] = useMyTeam();
+  const [pwa, setPwa] = useState(false);
   const saveTimer = useRef(null);
+
+  // iOS reports safe-area insets inconsistently in installed web apps,
+  // so detect standalone directly and pin the padding ourselves.
+  useEffect(() => {
+    const check = () => setPwa(
+      window.navigator.standalone === true ||
+      (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) ||
+      (window.matchMedia && window.matchMedia("(display-mode: fullscreen)").matches)
+    );
+    check();
+    const mq = window.matchMedia?.("(display-mode: standalone)");
+    mq?.addEventListener?.("change", check);
+    return () => mq?.removeEventListener?.("change", check);
+  }, []);
 
   const toast = useCallback((m) => { setToastMsg(m); setTimeout(() => setToastMsg(""), 1800); }, []);
 
@@ -3054,7 +3306,7 @@ export default function App() {
   const TITLES = { mock: "Mock Season", trade: "Trade Help", draft: "Draft Help", settings: "Settings" };
 
   return (
-    <div className="hd">
+    <div className={`hd${pwa ? " pwa" : ""}`}>
       <style>{CSS}</style>
 
       {screen === "hub" && <Hub go={setScreen} my={my} />}
@@ -3083,7 +3335,7 @@ export default function App() {
               <>
                 {tab === "draft" && <DraftRoom lg={lg} setLg={setLg} toast={toast} />}
                 {tab === "team" && <TeamView lg={lg} setLg={setLg} toast={toast} />}
-                {tab === "season" && <SeasonView lg={lg} setLg={setLg} toast={toast} />}
+                {tab === "season" && <SeasonView lg={lg} setLg={setLg} toast={toast} setTab={setTab} />}
                 {tab === "trades" && <TradesView lg={lg} toast={toast} />}
                 {tab === "tools" && <ToolsView lg={lg} toast={toast} />}
               </>
@@ -3095,9 +3347,18 @@ export default function App() {
 
           {screen === "mock" && lg && (
             <div className="tabs">
-              {[["draft", "Draft"], ["team", "Team"], ["season", "Season"], ["trades", "Trades"], ["tools", "Tools"]].map(([k, l]) => (
-                <button key={k} className={`tab ${tab === k ? "on" : ""}`} onClick={() => setTab(k)}>{l}</button>
-              ))}
+              {[["draft", "Draft"], ["team", "Team"], ["season", "Season"], ["trades", "Trades"], ["tools", "Tools"]].map(([k, l]) => {
+                const alert = k === "season" && lg.season?.tradeOffer ? 1 : 0;
+                return (
+                  <button key={k} className={`tab ${tab === k ? "on" : ""}`} onClick={() => setTab(k)}>
+                    <span style={{ position: "relative" }}>
+                      <span className="dot" />
+                      {alert ? <span className="badge">1</span> : null}
+                    </span>
+                    {l}
+                  </button>
+                );
+              })}
             </div>
           )}
         </>
