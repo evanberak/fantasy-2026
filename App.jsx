@@ -1053,7 +1053,7 @@ export function advancePlayoffs(lg, state, matchups) {
 
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;700&display=swap');
-.hd { --safe-top:max(env(safe-area-inset-top,0px),10px); --safe-bot:max(env(safe-area-inset-bottom,0px),8px); --ink:#0C1116; --panel:#141C24; --panel2:#1B252F; --line:#26323D;
+.hd { --nudge:0px; --safe-top:env(safe-area-inset-top,0px); --safe-bot:env(safe-area-inset-bottom,0px); --ink:#0C1116; --panel:#141C24; --panel2:#1B252F; --line:#26323D;
   --chalk:#E9EEF2; --mute:#8B9BA8; --first:#FFD400; --los:#3B7BFF;
   --red:#E2483A; --green:#22C48A;
   background:var(--ink); color:var(--chalk); font-family:Inter,system-ui,sans-serif;
@@ -1070,8 +1070,8 @@ const CSS = `
 /* signature: the first-down line */
 .fdl{position:relative}
 .fdl::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--first)}
-.hdr{position:sticky;top:0;padding-top:calc(12px + var(--safe-top));z-index:30;background:rgba(12,17,22,.94);backdrop-filter:blur(8px);
-  border-bottom:1px solid var(--line);padding:10px 14px;display:flex;align-items:center;gap:10px}
+.hdr{position:sticky;top:0;padding-top:calc(11px + var(--safe-top) + var(--nudge));z-index:30;background:rgba(12,17,22,.94);backdrop-filter:blur(8px);
+  border-bottom:1px solid var(--line);padding:10px 14px 11px;display:flex;align-items:center;gap:10px;min-height:56px}
 .tabs{position:sticky;bottom:0;z-index:30;display:grid;grid-template-columns:repeat(5,1fr);gap:4px;
   background:rgba(10,14,19,.98);backdrop-filter:blur(14px);border-top:1px solid var(--line);
   padding:8px 8px calc(8px + var(--safe-bot))}
@@ -1085,9 +1085,10 @@ const CSS = `
 .tab .badge{position:absolute;top:-4px;right:-6px;min-width:16px;height:16px;border-radius:99px;background:var(--red);
   color:#fff;font-size:9.5px;font-weight:700;display:grid;place-items:center;padding:0 4px;font-family:Inter,sans-serif}
 .wrap{padding:14px 14px 24px;max-width:760px;margin:0 auto}
-.wrap.top{padding-top:calc(18px + var(--safe-top))}
-@media (display-mode:standalone){ .hd{--safe-top:max(env(safe-area-inset-top,0px),56px);--safe-bot:max(env(safe-area-inset-bottom,0px),20px)} }
-.hd.pwa{--safe-top:max(env(safe-area-inset-top,0px),56px);--safe-bot:max(env(safe-area-inset-bottom,0px),20px)}
+.wrap.top{padding-top:calc(14px + var(--safe-top) + var(--nudge))}
+/* status-bar-style:black makes iOS reserve the bar, so insets stay small here.
+   Only the home indicator needs a floor. */
+.hd.pwa{--safe-bot:max(env(safe-area-inset-bottom,0px),16px)}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:13px;margin-bottom:11px}
 .card.tight{padding:0;overflow:hidden}
 .btn{background:var(--first);color:#101519;font-weight:700;padding:11px 14px;border-radius:7px;
@@ -2781,8 +2782,6 @@ function Versus({ lg }) {
   const [a, setA] = useState(PLAYERS[12]);
   const [b, setB] = useState(PLAYERS[19]);
   const [pick, setPick] = useState(null);
-  const [take, setTake] = useState("");
-  const [busy, setBusy] = useState(false);
   const ppr = lg.settings.ppr;
   const myIds = lg.rosters?.[lg.settings.userSlot] || [];
 
@@ -2799,19 +2798,6 @@ function Versus({ lg }) {
   const sa = score(a), sb = score(b);
   const winner = sa.adj - sa.byeClash * 0.6 >= sb.adj - sb.byeClash * 0.6 ? a : b;
   const margin = Math.abs(sa.adj - sb.adj) / Math.max(1, (sa.adj + sb.adj) / 2);
-
-  const ask = async () => {
-    setBusy(true);
-    try {
-      const t = await askClaude(
-        `Fantasy football 2026, ${lg.settings.teams}-team ${ppr === 1 ? "full PPR" : ppr === 0.5 ? "half PPR" : "standard"}${lg.settings.superflex ? " superflex" : ""}. ` +
-        `Who would you draft: ${a.name} (${a.pos}, ${a.team}, ADP ${a.adp}) or ${b.name} (${b.pos}, ${b.team}, ADP ${b.adp})? ` +
-        `Give a 3-sentence take: the case for each, then your pick. No preamble.`,
-        "You are a sharp, concise fantasy football analyst. Be decisive and specific. Never hedge into 'it depends on your league' filler.", 400);
-      setTake(t);
-    } catch { setTake("Couldn't reach the analyst right now."); }
-    setBusy(false);
-  };
 
   const Col = ({ p, s, on }) => (
     <div className="card" style={{ borderColor: on ? "var(--first)" : "var(--line)", marginBottom: 0 }}
@@ -2841,15 +2827,29 @@ function Versus({ lg }) {
         <h2 style={{ fontSize: 24, margin: "6px 0 8px" }}>{winner.name}</h2>
         <div className="mini">
           {margin < 0.06 ? "Effectively a coin flip — take the one whose role you believe in more." :
-            margin < 0.18 ? "A real but modest edge." : "Clear separation."}
-          {" "}Positional replacement level does most of the work here: {winner.pos} depth in a {lg.settings.teams}-team league
-          means the drop-off after {winner.name} is {winner.pos === "RB" || winner.pos === "TE" ? "steep" : "gentle"}.
-          {sa.byeClash > 1 || sb.byeClash > 1 ? " Bye overlap on your roster is factored in." : ""}
+            margin < 0.18 ? "A real but modest edge." : "Clear separation between these two."}
         </div>
-        <button className="btn alt" style={{ marginTop: 11 }} disabled={busy} onClick={ask}>
-          {busy ? "Thinking…" : "Get a second opinion"}
-        </button>
-        {take && <div className="mini" style={{ marginTop: 11, whiteSpace: "pre-wrap", color: "var(--chalk)" }}>{take}</div>}
+        <div className="divider" />
+        <div className="eyebrow" style={{ marginBottom: 6 }}>Why</div>
+        <div className="mini" style={{ marginBottom: 5 }}>
+          <b style={{ color: "var(--chalk)" }}>Replacement level.</b> In a {lg.settings.teams}-team league the drop-off after {winner.name}
+          {" "}at {winner.pos} is {winner.pos === "RB" || winner.pos === "TE" ? "steep — the next tier is a real downgrade" : "gentle, so similar production is available later"}.
+        </div>
+        <div className="mini" style={{ marginBottom: 5 }}>
+          <b style={{ color: "var(--chalk)" }}>Cost.</b> {a.name} goes around pick {a.adp}, {b.name} around {b.adp}.
+          {Math.abs(a.adp - b.adp) > 12
+            ? ` That ${Math.abs(a.adp - b.adp)}-pick gap means you can often get ${a.adp > b.adp ? a.name : b.name} a round later and take the other now.`
+            : " They cost about the same, so this is a straight talent call."}
+        </div>
+        <div className="mini" style={{ marginBottom: 5 }}>
+          <b style={{ color: "var(--chalk)" }}>Range of outcomes.</b> {sa.upside > sb.upside ? a.name : b.name} is the more volatile
+          of the two — higher ceiling, lower floor. {Math.abs(sa.upside - sb.upside) < 0.04 ? "Though the gap is small." : ""}
+        </div>
+        {(sa.byeClash > 1 || sb.byeClash > 1) && (
+          <div className="mini">
+            <b style={{ color: "var(--red)" }}>Bye conflict.</b> {sa.byeClash > 1 ? `${a.name} shares week ${a.bye} with ${sa.byeClash} of your players` : `${b.name} shares week ${b.bye} with ${sb.byeClash} of your players`}.
+          </div>
+        )}
       </div>
       <PlayerPicker open={!!pick} onClose={() => setPick(null)} title="Pick a player"
         onPick={(p) => { pick === "a" ? setA(p) : setB(p); setPick(null); }} />
@@ -2946,10 +2946,10 @@ function GMChat({ lg }) {
    with no mock league required. Saved separately from any league.
    ============================================================ */
 
-export const VERSION = "1.2.0";
+export const VERSION = "1.1.0";
 const MY_KEY = "huddle:myteam";
 
-const DEFAULT_MY = { ids: [], teams: 12, ppr: 1, superflex: false, name: "My Team" };
+const DEFAULT_MY = { ids: [], teams: 12, ppr: 1, superflex: false, name: "My Team", topPad: 0 };
 
 // a minimal league-shaped object so the engine works outside a mock draft
 function shellLeague(my) {
@@ -3182,6 +3182,23 @@ function Settings({ my, save, toast, onWipe }) {
       </div>
 
       <div className="card">
+        <h2 style={{ fontSize: 19, marginBottom: 6 }}>Top spacing</h2>
+        <div className="mini" style={{ marginBottom: 10 }}>
+          Phones report status-bar height differently, especially in installed web apps. If the header sits too close
+          to the clock — or too far from it — nudge it here.
+        </div>
+        <div className="grid2" style={{ gap: 7 }}>
+          {[0, 10, 20, 34].map((n) => (
+            <button key={n} className={`chip ${(my.topPad || 0) === n ? "on" : ""}`}
+              style={{ padding: "11px 8px", textAlign: "center", display: "block" }}
+              onClick={() => save({ ...my, topPad: n })}>
+              {n === 0 ? "Default" : `+${n}px`}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="card">
         <h2 style={{ fontSize: 19, marginBottom: 9 }}>Save & restore</h2>
         <div className="mini" style={{ marginBottom: 11 }}>
           Everything lives in this browser only. Export before you clear site data, switch phones, or reinstall —
@@ -3306,7 +3323,7 @@ export default function App() {
   const TITLES = { mock: "Mock Season", trade: "Trade Help", draft: "Draft Help", settings: "Settings" };
 
   return (
-    <div className={`hd${pwa ? " pwa" : ""}`}>
+    <div className={`hd${pwa ? " pwa" : ""}`} style={{ "--nudge": `${my.topPad || 0}px` }}>
       <style>{CSS}</style>
 
       {screen === "hub" && <Hub go={setScreen} my={my} />}
