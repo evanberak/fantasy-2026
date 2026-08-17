@@ -6,6 +6,7 @@ import json
 import os
 import random
 from pathlib import Path
+from html import escape
 
 import numpy as np
 import pandas as pd
@@ -47,29 +48,30 @@ from roster_vision import extract_roster_names
 
 APP_DIR = Path(__file__).resolve().parent
 SAMPLE_CSV = APP_DIR / "data" / "sample_projection_import.csv"
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.4.0"
 
 st.set_page_config(page_title="Fantasy GM 2026", page_icon="🏈", layout="centered", initial_sidebar_state="collapsed")
 
 st.markdown(
     """
 <style>
-:root { --fgm-green:#36d399; --fgm-card:#111821; --fgm-border:#26313d; --fgm-muted:#9aa7b5; --fgm-bg:#0b0f14; }
-html, body, [data-testid="stAppViewContainer"] {background:var(--fgm-bg);}
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Sora:wght@500;600;700;800&display=swap');
+:root { --fgm-green:#47e5a4; --fgm-card:#121925; --fgm-card-2:#0e141d; --fgm-border:#243040; --fgm-muted:#98a9ba; --fgm-bg:#081018; --fgm-pink:#ff73b9; --fgm-blue:#73b6ff; }
+html, body, [data-testid="stAppViewContainer"] {background:radial-gradient(circle at top,#122033 0%,#0b1320 42%,#081018 100%); font-family:'Inter', system-ui, sans-serif;}
 .block-container {padding-top:.7rem; padding-bottom:5.5rem; max-width:860px;}
 [data-testid="stHeader"] {background:rgba(11,15,20,.86); backdrop-filter:blur(12px);}
 [data-testid="stSidebar"] {border-right:1px solid #202a34;}
 .fgm-appbar {display:flex;align-items:center;justify-content:space-between;gap:12px;padding:5px 2px 10px 2px;}
-.fgm-brand {font-size:1.05rem;font-weight:900;letter-spacing:-.02em;}
+.fgm-brand {font-size:1.08rem;font-weight:900;letter-spacing:-.03em;font-family:'Sora', sans-serif;}
 .fgm-brand span {color:var(--fgm-green);}
 .fgm-version {font-size:.72rem;color:var(--fgm-muted);border:1px solid var(--fgm-border);border-radius:999px;padding:3px 8px;margin-left:6px;}
-.fgm-hero {padding:18px 18px;border:1px solid var(--fgm-border);border-radius:20px;background:linear-gradient(145deg,#121b25,#0d141b);margin:10px 0 14px 0;box-shadow:0 10px 32px rgba(0,0,0,.18);}
-.fgm-kicker {font-size:.7rem;letter-spacing:.13em;text-transform:uppercase;color:var(--fgm-green);font-weight:850;}
-.fgm-title {font-size:1.8rem;font-weight:900;margin:.2rem 0 .12rem 0;line-height:1.05;letter-spacing:-.035em;}
-.fgm-sub {color:var(--fgm-muted);font-size:.93rem;line-height:1.45;}
-.fgm-card {border:1px solid var(--fgm-border);background:var(--fgm-card);border-radius:18px;padding:16px 16px;height:100%;box-shadow:0 6px 24px rgba(0,0,0,.12);}
+.fgm-hero {padding:20px 18px;border:1px solid rgba(255,255,255,.07);border-radius:24px;background:linear-gradient(160deg,rgba(23,35,54,.94),rgba(12,18,28,.94));margin:10px 0 14px 0;box-shadow:0 16px 45px rgba(0,0,0,.28), inset 0 1px 0 rgba(255,255,255,.05);backdrop-filter: blur(12px);}
+.fgm-kicker {font-size:.72rem;letter-spacing:.16em;text-transform:uppercase;color:var(--fgm-green);font-weight:850;font-family:'Sora', sans-serif;}
+.fgm-title {font-size:1.95rem;font-weight:900;margin:.2rem 0 .18rem 0;line-height:1.02;letter-spacing:-.05em;font-family:'Sora', sans-serif;}
+.fgm-sub {color:#c3d0dc;font-size:.95rem;line-height:1.5;opacity:.92;}
+.fgm-card {border:1px solid rgba(255,255,255,.07);background:linear-gradient(180deg,rgba(18,25,37,.96),rgba(12,18,28,.96));border-radius:22px;padding:16px 16px;height:100%;box-shadow:0 10px 30px rgba(0,0,0,.18);backdrop-filter: blur(10px);}
 .fgm-card h3 {margin-top:0;font-size:1.02rem;}
-.fgm-pill {display:inline-block;padding:4px 9px;border:1px solid #31404e;border-radius:999px;margin:2px 4px 2px 0;font-size:.74rem;color:#cbd5df;}
+.fgm-pill {display:inline-block;padding:5px 10px;border:1px solid rgba(255,255,255,.08);border-radius:999px;margin:2px 4px 2px 0;font-size:.74rem;color:#d7e3ee;background:rgba(255,255,255,.03);}
 .fgm-good {color:#5ee6ad;font-weight:700}.fgm-warn {color:#ffd166;font-weight:700}.fgm-bad {color:#ff7b7b;font-weight:700}
 .small-muted {font-size:.8rem;color:var(--fgm-muted)}
 
@@ -88,6 +90,30 @@ hr {border-color:#202a34 !important;}
 /* Pills become the app's primary tap navigation and wrap cleanly on phones. */
 div[data-testid="stPills"] {margin:.1rem 0 .45rem 0;}
 div[data-testid="stPills"] button {min-height:42px !important;border-radius:999px !important;font-weight:750 !important;padding:.45rem .8rem !important;}
+
+
+.fgm-section-title {font-family:'Sora', sans-serif;font-size:1rem;font-weight:800;letter-spacing:-.02em;margin:.2rem 0 .65rem 0;}
+.fgm-list {display:flex;flex-direction:column;gap:12px;margin:.25rem 0 .6rem 0;}
+.fgm-list-card {border:1px solid rgba(255,255,255,.07);background:linear-gradient(180deg,rgba(18,25,37,.98),rgba(12,18,28,.98));border-radius:20px;padding:14px 14px 12px 14px;box-shadow:0 10px 25px rgba(0,0,0,.16);}
+.fgm-row-top {display:flex;align-items:flex-start;justify-content:space-between;gap:10px;}
+.fgm-row-title {font-family:'Sora', sans-serif;font-size:1rem;font-weight:800;letter-spacing:-.02em;line-height:1.15;color:#f4f8fc;}
+.fgm-row-sub {font-size:.86rem;color:#b9c8d6;margin-top:5px;line-height:1.35;}
+.fgm-badges {display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end;}
+.fgm-mini-badge {padding:4px 8px;border-radius:999px;background:rgba(71,229,164,.10);border:1px solid rgba(71,229,164,.18);font-size:.72rem;font-weight:700;color:#c8ffea;white-space:nowrap;}
+.fgm-mini-badge.alt {background:rgba(115,182,255,.10);border-color:rgba(115,182,255,.18);color:#d7e8ff;}
+.fgm-stats {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:11px;}
+.fgm-stat-chip {padding:9px 10px;border-radius:14px;background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.05);}
+.fgm-stat-label {display:block;font-size:.7rem;text-transform:uppercase;letter-spacing:.08em;color:#88a0b6;font-weight:800;font-family:'Sora', sans-serif;}
+.fgm-stat-value {display:block;font-size:.96rem;color:#f3f7fb;font-weight:800;line-height:1.15;margin-top:2px;}
+.fgm-empty {border:1px dashed rgba(255,255,255,.12);border-radius:18px;padding:18px 16px;text-align:center;color:#b8c8d8;background:rgba(255,255,255,.02);}
+.fgm-compare {display:flex;flex-direction:column;gap:10px;margin-top:.4rem;}
+.fgm-compare-card {border:1px solid rgba(255,255,255,.07);background:linear-gradient(180deg,rgba(18,25,37,.98),rgba(12,18,28,.98));border-radius:20px;padding:14px;}
+.fgm-compare-head {font-family:'Sora', sans-serif;font-size:.98rem;font-weight:800;margin-bottom:8px;color:#f5f9fc;}
+.fgm-compare-grid {display:grid;grid-template-columns:1fr auto 1fr;gap:10px;align-items:center;}
+.fgm-compare-side {padding:10px;border-radius:14px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.05);}
+.fgm-compare-name {display:block;font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:#89a0b6;font-weight:800;font-family:'Sora', sans-serif;}
+.fgm-compare-value {display:block;font-size:1rem;color:#f5f8fb;font-weight:800;margin-top:2px;}
+.fgm-compare-vs {font-family:'Sora', sans-serif;font-weight:900;color:#5ee6ad;letter-spacing:.02em;}
 
 @media (max-width: 700px) {
     .block-container {padding:.55rem .72rem 5rem .72rem;}
@@ -213,6 +239,84 @@ def hero(kicker: str, title: str, sub: str):
         f'<div class="fgm-hero"><div class="fgm-kicker">{kicker}</div><div class="fgm-title">{title}</div><div class="fgm-sub">{sub}</div></div>',
         unsafe_allow_html=True,
     )
+
+
+def _fmt_value(value):
+    if value is None:
+        return '—'
+    try:
+        if pd.isna(value):
+            return '—'
+    except Exception:
+        pass
+    if isinstance(value, float):
+        return f"{value:.1f}"
+    return str(value)
+
+
+def render_card_list(rows, *, title_key: str, subtitle_keys=None, stat_keys=None, badge_keys=None, empty_message='Nothing here yet.', title=None):
+    if isinstance(rows, pd.DataFrame):
+        records = rows.to_dict(orient='records')
+    else:
+        records = list(rows)
+    if title:
+        st.markdown(f"<div class='fgm-section-title'>{escape(str(title))}</div>", unsafe_allow_html=True)
+    if not records:
+        st.markdown(f"<div class='fgm-empty'>{escape(empty_message)}</div>", unsafe_allow_html=True)
+        return
+    subtitle_keys = subtitle_keys or []
+    stat_keys = stat_keys or []
+    badge_keys = badge_keys or []
+    html = ["<div class='fgm-list'>"]
+    for row in records:
+        title_val = escape(_fmt_value(row.get(title_key)))
+        subtitle_parts = []
+        for key in subtitle_keys:
+            val = _fmt_value(row.get(key))
+            if val != '—':
+                subtitle_parts.append(escape(f"{key}: {val}"))
+        badge_html = []
+        for idx, key in enumerate(badge_keys):
+            val = _fmt_value(row.get(key))
+            if val == '—':
+                continue
+            badge_class = 'fgm-mini-badge alt' if idx % 2 else 'fgm-mini-badge'
+            badge_html.append(f"<span class='{badge_class}'>{escape(val)}</span>")
+        stat_html = []
+        for label, key in stat_keys:
+            val = _fmt_value(row.get(key))
+            stat_html.append(
+                f"<div class='fgm-stat-chip'><span class='fgm-stat-label'>{escape(str(label))}</span><span class='fgm-stat-value'>{escape(val)}</span></div>"
+            )
+        html.append(
+            "<div class='fgm-list-card'>"
+            f"<div class='fgm-row-top'><div><div class='fgm-row-title'>{title_val}</div>"
+            + (f"<div class='fgm-row-sub'>{' • '.join(subtitle_parts)}</div>" if subtitle_parts else '')
+            + "</div>"
+            + (f"<div class='fgm-badges'>{''.join(badge_html)}</div>" if badge_html else '')
+            + "</div>"
+            + (f"<div class='fgm-stats'>{''.join(stat_html)}</div>" if stat_html else '')
+            + "</div>"
+        )
+    html.append('</div>')
+    st.markdown(''.join(html), unsafe_allow_html=True)
+
+
+def render_compare_cards(rows, left_name: str, right_name: str):
+    if not rows:
+        st.markdown("<div class='fgm-empty'>Nothing to compare yet.</div>", unsafe_allow_html=True)
+        return
+    html = ["<div class='fgm-compare'>"]
+    for row in rows:
+        html.append(
+            "<div class='fgm-compare-card'>"
+            f"<div class='fgm-compare-head'>{escape(str(row['Metric']))}</div>"
+            f"<div class='fgm-compare-grid'><div class='fgm-compare-side'><span class='fgm-compare-name'>{escape(left_name)}</span><span class='fgm-compare-value'>{escape(_fmt_value(row[left_name]))}</span></div><div class='fgm-compare-vs'>VS</div><div class='fgm-compare-side'><span class='fgm-compare-name'>{escape(right_name)}</span><span class='fgm-compare-value'>{escape(_fmt_value(row[right_name]))}</span></div></div>"
+            f"<div class='fgm-row-sub' style='margin-top:10px'>Better result: <strong>{escape(str(row['Better']))}</strong></div>"
+            "</div>"
+        )
+    html.append('</div>')
+    st.markdown(''.join(html), unsafe_allow_html=True)
 
 
 def load_save_payload(data: dict) -> None:
@@ -527,7 +631,7 @@ elif page == "Mock Draft":
 
             top = avail[["name", "team", "position", "adp", "projected_points", "ceiling", "floor"]].head(20).copy()
             top.columns = ["Player", "Team", "Pos", "ADP", "Proj", "Ceiling", "Floor"]
-            st.dataframe(top, use_container_width=True, hide_index=True)
+            render_card_list(top, title_key="Player", subtitle_keys=["Team"], badge_keys=["Pos"], stat_keys=[("ADP", "ADP"), ("Proj", "Proj"), ("Ceiling", "Ceiling"), ("Floor", "Floor")], title="Best available")
         else:
             st.success("Draft complete. Your league is ready for lineup management, waivers, trades and season simulation.")
             if st.session_state.season is None:
@@ -539,11 +643,12 @@ elif page == "Mock Draft":
             board["Team"] = board["team_index"].map({m["team_index"]: m["team_name"] for m in d["managers"]})
             board = board[["overall", "round", "pick_in_round", "Team", "name", "position", "team", "adp"]]
             board.columns = ["#", "Rnd", "Pick", "Fantasy Team", "Player", "Pos", "NFL", "ADP"]
-            st.dataframe(board.tail(50), use_container_width=True, hide_index=True)
+            render_card_list(board.tail(30).to_dict(orient="records"), title_key="Player", subtitle_keys=["Fantasy Team", "NFL"], badge_keys=["Pos"], stat_keys=[("Overall", "#"), ("Round", "Rnd"), ("Pick", "Pick"), ("ADP", "ADP")], title="Latest picks")
 
         with st.expander("CPU manager personalities"):
             mdf = pd.DataFrame(d["managers"])[["team_name", "personality", "desc"]]
-            st.dataframe(mdf, use_container_width=True, hide_index=True)
+            mdf.columns = ["Team", "Personality", "Description"]
+            render_card_list(mdf, title_key="Team", subtitle_keys=["Description"], badge_keys=["Personality"], title="Manager styles")
 
 
 # ------------------------------ My Team ------------------------------
@@ -557,7 +662,7 @@ elif page == "My Team":
         rdf = rdf.sort_values(["position", "projected_points"], ascending=[True, False])
         show = rdf[["name", "team", "position", "projected_points", "ceiling", "floor", "adp", "trade_value"]].copy()
         show.columns = ["Player", "NFL", "Pos", "Season Proj", "Ceiling", "Floor", "ADP", "Trade Value"]
-        st.dataframe(show, use_container_width=True, hide_index=True)
+        render_card_list(show, title_key="Player", subtitle_keys=["NFL"], badge_keys=["Pos"], stat_keys=[("Proj", "Season Proj"), ("Ceiling", "Ceiling"), ("Floor", "Floor"), ("Trade", "Trade Value")], title="Roster overview")
 
         st.subheader("Starting lineup")
         auto = auto_lineup(roster, players, d["settings"], unavailable=set())
@@ -644,13 +749,13 @@ elif page == "Season Simulator":
                 rows = []
                 for g in result["results"]:
                     rows.append({"Team A": manager_name(g["team_a"]), "Score A": g["score_a"], "Team B": manager_name(g["team_b"]), "Score B": g["score_b"]})
-                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                render_card_list(pd.DataFrame(rows), title_key="Team A", subtitle_keys=["Team B"], stat_keys=[("Score A", "Score A"), ("Score B", "Score B")], title="Matchups")
             if result.get("new_injuries"):
                 st.warning("Injuries: " + "; ".join(f"{x['name']} ({x['weeks']} wks)" for x in result["new_injuries"][:8]))
 
         st.subheader("Standings")
         standings = standings_frame(season, d)
-        st.dataframe(standings.drop(columns=["team_index"]), use_container_width=True, hide_index=True)
+        render_card_list(standings.drop(columns=["team_index"]), title_key="Team", subtitle_keys=["Record"], stat_keys=[("Wins", "W"), ("Losses", "L"), ("PF", "PF"), ("PA", "PA")], title="Standings")
 
         st.subheader("Power rankings")
         power_rows = []
@@ -663,7 +768,7 @@ elif page == "Season Simulator":
         power = pd.DataFrame(power_rows).sort_values("Power Score", ascending=False).reset_index(drop=True)
         power.index = power.index + 1
         power.insert(0, "Rank", power.index)
-        st.dataframe(power.head(12), use_container_width=True, hide_index=True)
+        render_card_list(power.head(12), title_key="Team", subtitle_keys=["Record"], stat_keys=[("Rank", "Rank"), ("Strength", "Weekly Strength"), ("Power", "Power Score")], title="Power rankings")
 
         if result and result.get("week") == season["week"]:
             st.subheader("Weekly recap")
@@ -683,7 +788,7 @@ elif page == "Season Simulator":
             for pid, weeks in season["injuries"].items():
                 p = lookup.get(pid, {})
                 ir.append({"Player": p.get("name", pid), "Pos": p.get("position", ""), "Team": p.get("team", ""), "Weeks Remaining": weeks})
-            st.dataframe(pd.DataFrame(ir), use_container_width=True, hide_index=True)
+            render_card_list(pd.DataFrame(ir), title_key="Player", subtitle_keys=["Team"], badge_keys=["Pos"], stat_keys=[("Weeks Left", "Weeks Remaining")], title="Injury report")
 
 
 # ------------------------------ Waiver Wire ------------------------------
@@ -694,7 +799,7 @@ elif page == "Waiver Wire":
         fa = free_agents(season, players)
         show = fa.head(35)[["name", "team", "position", "projected_points", "last_week", "trending", "waiver_score"]].copy()
         show.columns = ["Player", "NFL", "Pos", "Season Proj", "Last Week", "Trending", "Waiver Score"]
-        st.dataframe(show, use_container_width=True, hide_index=True)
+        render_card_list(show, title_key="Player", subtitle_keys=["NFL"], badge_keys=["Pos"], stat_keys=[("Proj", "Season Proj"), ("Last Wk", "Last Week"), ("Trend", "Trending"), ("Score", "Waiver Score")], title="Best free agents")
 
         options = fa.head(100)["player_id"].astype(str).tolist()
         if options:
@@ -818,7 +923,7 @@ elif page == "Player Compare":
         rows = []
         for metric, (av, bv, direction) in comp["metrics"].items():
             rows.append({"Metric": metric, ra["name"]: round(av, 2), rb["name"]: round(bv, 2), "Better": "Higher" if direction == "high" else "Lower"})
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        render_compare_cards(rows, ra["name"], rb["name"])
 
 
 # ------------------------------ Roster Screenshot ------------------------------
@@ -858,7 +963,8 @@ elif page == "Roster Screenshot":
             else:
                 mapped.append((raw, "No confident match", None))
         mdf = pd.DataFrame(mapped, columns=["Screenshot/Paste", "Matched Player", "player_id"])
-        st.dataframe(mdf.drop(columns=["player_id"]), use_container_width=True, hide_index=True)
+        matches_view = mdf.drop(columns=["player_id"]).rename(columns={"Screenshot/Paste": "Submitted Name"})
+        render_card_list(matches_view, title_key="Matched Player", subtitle_keys=["Submitted Name"], title="Matched players")
 
         matched_ids = [pid for _, _, pid in mapped if pid]
         if matched_ids:
@@ -895,7 +1001,7 @@ elif page == "Fantasy Lab":
                 {"Scenario": "Before", **res["before"]},
                 {"Scenario": "After", **res["after"]},
             ])
-            st.dataframe(details, use_container_width=True, hide_index=True)
+            render_card_list(details, title_key="Scenario", stat_keys=[("Mean", "mean"), ("Median", "median"), ("Floor", "p10"), ("Ceiling", "p90")], title="Simulation summary")
 
 
 # ------------------------------ Data & Saves ------------------------------
