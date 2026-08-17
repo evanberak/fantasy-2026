@@ -25,6 +25,26 @@ npm run preview   # serve the build locally
 
 Deploy `dist/` anywhere static: Vercel, Netlify, GitHub Pages, Cloudflare Pages.
 
+### Putting it on GitHub
+
+Create an empty repo, then either:
+
+- **Web upload** — click *Add file → Upload files*, select all 10 files (not the
+  folder, the files inside it), commit. Note that `.gitignore` and `.env.example`
+  start with a dot and may be hidden in your file picker; press `Cmd+Shift+.` on
+  macOS or enable hidden files on Windows to see them. Neither is required for the
+  app to run.
+- **Command line** —
+  ```bash
+  git init && git add -A && git commit -m "Huddle"
+  git branch -M main
+  git remote add origin https://github.com/YOU/huddle.git
+  git push -u origin main
+  ```
+
+For Vercel or Netlify, point them at the repo and accept the defaults — they detect
+Vite, run `npm run build`, and serve `dist/`. No configuration needed.
+
 ---
 
 ## Features
@@ -108,19 +128,20 @@ screen. Storage is per-browser and per-device — clearing site data clears leag
 
 ## Project layout
 
+Everything sits in one flat folder — no subdirectories, so you can drag the whole
+thing into a GitHub repo in one go.
+
 ```
-huddle/
-├── index.html              app shell, PWA meta, iOS fullscreen
-├── manifest.webmanifest    home-screen install
-├── icon.svg
-├── package.json
-├── vite.config.js
-├── .env.example
-└── src/
-    ├── main.jsx            entry point
-    ├── App.jsx             data, engine, and UI
-    ├── storage.js          localStorage-backed persistence shim
-    └── anthropic.js        routes Claude calls (key or proxy)
+index.html              app shell, PWA meta, iOS fullscreen
+main.jsx                entry point
+App.jsx                 data, engine, and UI
+storage.js              localStorage-backed persistence shim
+anthropic.js            routes Claude calls (key or proxy)
+manifest.webmanifest    home-screen install
+icon.svg
+package.json
+vite.config.js
+.env.example
 ```
 
 `App.jsx` is organized top to bottom as: player data and projection curves →
