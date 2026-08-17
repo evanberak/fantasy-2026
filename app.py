@@ -44,31 +44,62 @@ from roster_vision import extract_roster_names
 
 APP_DIR = Path(__file__).resolve().parent
 SAMPLE_CSV = APP_DIR / "data" / "sample_projection_import.csv"
+APP_VERSION = "0.2.0"
 
-st.set_page_config(page_title="Fantasy GM 2026", page_icon="🏈", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Fantasy GM 2026", page_icon="🏈", layout="centered", initial_sidebar_state="collapsed")
 
 st.markdown(
     """
 <style>
-:root { --fgm-green:#36d399; --fgm-card:#111821; --fgm-border:#26313d; --fgm-muted:#9aa7b5; }
-.block-container {padding-top: 1.4rem; padding-bottom: 3rem; max-width: 1500px;}
+:root { --fgm-green:#36d399; --fgm-card:#111821; --fgm-border:#26313d; --fgm-muted:#9aa7b5; --fgm-bg:#0b0f14; }
+html, body, [data-testid="stAppViewContainer"] {background:var(--fgm-bg);}
+.block-container {padding-top:.7rem; padding-bottom:5.5rem; max-width:860px;}
+[data-testid="stHeader"] {background:rgba(11,15,20,.86); backdrop-filter:blur(12px);}
 [data-testid="stSidebar"] {border-right:1px solid #202a34;}
-.fgm-hero {padding:22px 24px;border:1px solid var(--fgm-border);border-radius:18px;background:linear-gradient(135deg,#111923,#0d141b);margin-bottom:18px;}
-.fgm-kicker {font-size:.75rem;letter-spacing:.14em;text-transform:uppercase;color:var(--fgm-green);font-weight:800;}
-.fgm-title {font-size:2.1rem;font-weight:850;margin:.18rem 0 .1rem 0;line-height:1.03;}
-.fgm-sub {color:var(--fgm-muted);font-size:.98rem;}
-.fgm-card {border:1px solid var(--fgm-border);background:var(--fgm-card);border-radius:15px;padding:16px 17px;height:100%;}
-.fgm-card h3 {margin-top:0;font-size:1.05rem;}
-.fgm-pill {display:inline-block;padding:4px 9px;border:1px solid #31404e;border-radius:999px;margin:2px 4px 2px 0;font-size:.76rem;color:#cbd5df;}
+.fgm-appbar {display:flex;align-items:center;justify-content:space-between;gap:12px;padding:5px 2px 10px 2px;}
+.fgm-brand {font-size:1.05rem;font-weight:900;letter-spacing:-.02em;}
+.fgm-brand span {color:var(--fgm-green);}
+.fgm-version {font-size:.72rem;color:var(--fgm-muted);border:1px solid var(--fgm-border);border-radius:999px;padding:3px 8px;margin-left:6px;}
+.fgm-hero {padding:18px 18px;border:1px solid var(--fgm-border);border-radius:20px;background:linear-gradient(145deg,#121b25,#0d141b);margin:10px 0 14px 0;box-shadow:0 10px 32px rgba(0,0,0,.18);}
+.fgm-kicker {font-size:.7rem;letter-spacing:.13em;text-transform:uppercase;color:var(--fgm-green);font-weight:850;}
+.fgm-title {font-size:1.8rem;font-weight:900;margin:.2rem 0 .12rem 0;line-height:1.05;letter-spacing:-.035em;}
+.fgm-sub {color:var(--fgm-muted);font-size:.93rem;line-height:1.45;}
+.fgm-card {border:1px solid var(--fgm-border);background:var(--fgm-card);border-radius:18px;padding:16px 16px;height:100%;box-shadow:0 6px 24px rgba(0,0,0,.12);}
+.fgm-card h3 {margin-top:0;font-size:1.02rem;}
+.fgm-pill {display:inline-block;padding:4px 9px;border:1px solid #31404e;border-radius:999px;margin:2px 4px 2px 0;font-size:.74rem;color:#cbd5df;}
 .fgm-good {color:#5ee6ad;font-weight:700}.fgm-warn {color:#ffd166;font-weight:700}.fgm-bad {color:#ff7b7b;font-weight:700}
-.small-muted {font-size:.82rem;color:var(--fgm-muted)}
-div[data-testid="stMetric"] {border:1px solid var(--fgm-border);background:var(--fgm-card);padding:12px;border-radius:14px;}
-button[kind="primary"] {font-weight:800;}
+.small-muted {font-size:.8rem;color:var(--fgm-muted)}
+
+/* Make Streamlit controls feel like touch-first app controls. */
+.stButton > button, .stDownloadButton > button, button[data-testid="baseButton-primary"], button[data-testid="baseButton-secondary"] {
+    min-height:48px !important;border-radius:14px !important;font-weight:800 !important;font-size:.95rem !important;
+}
+div[data-baseweb="select"] > div, .stTextInput input, .stNumberInput input, .stFileUploader section {
+    min-height:46px;border-radius:13px !important;
+}
+div[data-testid="stMetric"] {border:1px solid var(--fgm-border);background:var(--fgm-card);padding:11px 12px;border-radius:16px;}
+div[data-testid="stMetricValue"] {font-size:1.45rem;}
+[data-testid="stDataFrame"] {border:1px solid var(--fgm-border);border-radius:16px;overflow:hidden;}
+hr {border-color:#202a34 !important;}
+
+/* Pills become the app's primary tap navigation and wrap cleanly on phones. */
+div[data-testid="stPills"] {margin:.1rem 0 .45rem 0;}
+div[data-testid="stPills"] button {min-height:42px !important;border-radius:999px !important;font-weight:750 !important;padding:.45rem .8rem !important;}
+
+@media (max-width: 700px) {
+    .block-container {padding:.55rem .72rem 5rem .72rem;}
+    .fgm-hero {padding:16px 15px;border-radius:18px;}
+    .fgm-title {font-size:1.55rem;}
+    .fgm-sub {font-size:.88rem;}
+    .fgm-card {padding:14px;border-radius:16px;}
+    [data-testid="stHorizontalBlock"] {gap:.55rem;}
+    div[data-testid="stMetricValue"] {font-size:1.28rem;}
+    .stButton > button, .stDownloadButton > button {min-height:50px !important;}
+}
 </style>
 """,
     unsafe_allow_html=True,
 )
-
 
 # ------------------------------ Data + state ------------------------------
 @st.cache_data(ttl=60 * 60 * 12, show_spinner=False)
@@ -95,6 +126,8 @@ def init_state():
         st.session_state.last_week_result = None
     if "vision_names" not in st.session_state:
         st.session_state.vision_names = []
+    if "show_season_import" not in st.session_state:
+        st.session_state.show_season_import = False
 
 
 init_state()
@@ -175,42 +208,94 @@ def hero(kicker: str, title: str, sub: str):
     )
 
 
-# ------------------------------ Navigation ------------------------------
-st.sidebar.markdown("## 🏈 Fantasy GM")
-st.sidebar.caption("Draft it. Manage it. Sim it.")
-page = st.sidebar.radio(
-    "Navigation",
-    [
-        "Home", "League Setup", "Mock Draft", "My Team", "Season Simulator", "Waiver Wire",
-        "Trade Center", "Player Compare", "Roster Screenshot", "Fantasy Lab", "Data & Saves",
-    ],
-    label_visibility="collapsed",
-)
-st.sidebar.divider()
-st.sidebar.caption(st.session_state.data_status or "Loading player data…")
-if st.session_state.draft:
-    d = st.session_state.draft
-    st.sidebar.metric("Draft", "Complete" if d.get("completed") else f"Pick {d['pick_index'] + 1}/{len(d['order'])}")
-if st.session_state.season:
-    st.sidebar.metric("Season", f"Week {st.session_state.season['week']}")
+def load_save_payload(data: dict) -> None:
+    """Restore a season universe from a Fantasy GM JSON save."""
+    st.session_state.draft = data["draft"]
+    st.session_state.season = data.get("season")
+    if data.get("players"):
+        st.session_state.custom_players = normalize_player_df(pd.DataFrame(data["players"])).to_dict(orient="records")
+        st.session_state.data_status = "Player data embedded in imported season"
+    st.session_state.settings = st.session_state.draft.get("settings", st.session_state.settings)
+    st.session_state.last_week_result = None
+    st.session_state.trade_results = []
 
+
+def season_save_text() -> str | None:
+    if not st.session_state.draft:
+        return None
+    custom = pd.DataFrame(st.session_state.custom_players) if st.session_state.custom_players else None
+    return serialize_state(st.session_state.draft, st.session_state.season, custom)
+
+
+# ------------------------------ Navigation ------------------------------
+appbar_left, appbar_right = st.columns([2.5, 1.7], vertical_alignment="center")
+with appbar_left:
+    st.markdown(
+        f'<div class="fgm-appbar"><div class="fgm-brand">🏈 Fantasy <span>GM</span><span class="fgm-version">v{APP_VERSION}</span></div></div>',
+        unsafe_allow_html=True,
+    )
+with appbar_right:
+    if st.button("↻ Get Latest Version", use_container_width=True, help="Reload the deployed app and refresh cached player data."):
+        st.cache_data.clear()
+        if st.session_state.custom_players is None:
+            fetch_sleeper_player_pool.clear()
+            st.session_state.data_status = ""
+        st.rerun()
+
+primary = st.pills(
+    "Main navigation",
+    ["Home", "Draft", "Team", "Season", "Tools"],
+    default="Home",
+    key="primary_nav",
+    label_visibility="collapsed",
+    width="stretch",
+)
+primary = primary or "Home"
+
+if primary == "Draft":
+    page = st.pills(
+        "Draft navigation", ["League Setup", "Mock Draft"], default="Mock Draft",
+        key="draft_nav", label_visibility="collapsed", width="stretch",
+    ) or "Mock Draft"
+elif primary == "Team":
+    page = st.pills(
+        "Team navigation", ["My Team", "Waiver Wire", "Trade Center"], default="My Team",
+        key="team_nav", label_visibility="collapsed", width="stretch",
+    ) or "My Team"
+elif primary == "Season":
+    page = "Season Simulator"
+elif primary == "Tools":
+    page = st.pills(
+        "Tools navigation", ["Player Compare", "Roster Screenshot", "Fantasy Lab", "Data & Saves"],
+        default="Player Compare", key="tools_nav", label_visibility="collapsed", width="stretch",
+    ) or "Player Compare"
+else:
+    page = "Home"
+
+# Status stays available without occupying mobile screen space.
+with st.sidebar:
+    st.markdown("## 🏈 Fantasy GM")
+    st.caption(f"Version {APP_VERSION}")
+    st.caption(st.session_state.data_status or "Loading player data…")
+    if st.session_state.draft:
+        d = st.session_state.draft
+        st.metric("Draft", "Complete" if d.get("completed") else f"Pick {d['pick_index'] + 1}/{len(d['order'])}")
+    if st.session_state.season:
+        st.metric("Season", f"Week {st.session_state.season['week']}")
 
 # ------------------------------ Home ------------------------------
 if page == "Home":
     hero("FANTASY FOOTBALL SANDBOX", "Fantasy GM 2026", "One connected universe: mock draft → lineup → waivers → trades → season simulation → playoffs.")
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2 = st.columns(2)
     c1.metric("Player pool", f"{len(players):,}")
     c2.metric("League size", st.session_state.settings["teams"])
+    c3, c4 = st.columns(2)
     c3.metric("Scoring", st.session_state.settings["scoring"])
     c4.metric("Your slot", f"{st.session_state.settings['draft_slot']}")
 
-    a, b, c = st.columns(3)
-    with a:
-        st.markdown("<div class='fgm-card'><h3>🐍 Draft Room</h3><p>Snake drafts with CPU manager personalities, roster needs, ADP pressure and controlled randomness.</p><span class='fgm-pill'>Saved draft</span><span class='fgm-pill'>CPU personalities</span><span class='fgm-pill'>Auto-pick</span></div>", unsafe_allow_html=True)
-    with b:
-        st.markdown("<div class='fgm-card'><h3>🧠 Trade Intelligence</h3><p>Compare packages, estimate roster impact, search mutually beneficial deals and test them in Fantasy Lab.</p><span class='fgm-pill'>Fairness</span><span class='fgm-pill'>Acceptance</span><span class='fgm-pill'>Roster fit</span></div>", unsafe_allow_html=True)
-    with c:
-        st.markdown("<div class='fgm-card'><h3>🧪 Season Universe</h3><p>Sim weekly outcomes with volatility, breakouts, injuries, FAAB, standings and playoff progression.</p><span class='fgm-pill'>18 weeks</span><span class='fgm-pill'>Waivers</span><span class='fgm-pill'>Monte Carlo</span></div>", unsafe_allow_html=True)
+    st.markdown("<div class='fgm-card'><h3>🐍 Draft Room</h3><p>Strategic snake-draft CPUs, roster needs, ADP discipline and realistic roster construction.</p><span class='fgm-pill'>Saved draft</span><span class='fgm-pill'>Strategic CPUs</span><span class='fgm-pill'>Auto-pick</span></div>", unsafe_allow_html=True)
+    st.markdown("<div class='fgm-card'><h3>🧠 Trade Intelligence</h3><p>Compare packages, estimate roster impact, search mutually beneficial deals and test them in Fantasy Lab.</p><span class='fgm-pill'>Fairness</span><span class='fgm-pill'>Acceptance</span><span class='fgm-pill'>Roster fit</span></div>", unsafe_allow_html=True)
+    st.markdown("<div class='fgm-card'><h3>🧪 Season Universe</h3><p>Sim weekly outcomes with volatility, breakouts, injuries, FAAB, standings and playoff progression.</p><span class='fgm-pill'>Season saves</span><span class='fgm-pill'>Waivers</span><span class='fgm-pill'>Monte Carlo</span></div>", unsafe_allow_html=True)
 
     st.subheader("League status")
     if not st.session_state.draft:
@@ -235,25 +320,29 @@ elif page == "League Setup":
     hero("BUILD YOUR LEAGUE", "League Setup", "Configure the fantasy universe before starting a new draft.")
     s = st.session_state.settings
     with st.form("league_setup"):
-        top1, top2, top3, top4 = st.columns(4)
+        top1, top2 = st.columns(2)
         league_name = top1.text_input("League name", value=s["league_name"])
         teams = top2.selectbox("Teams", [8, 10, 12, 14, 16], index=[8, 10, 12, 14, 16].index(int(s["teams"])))
+        top3, top4 = st.columns(2)
         scoring = top3.selectbox("Scoring", ["PPR", "Half PPR", "Standard"], index=["PPR", "Half PPR", "Standard"].index(s["scoring"]))
         draft_slot = top4.number_input("Your draft slot", 1, int(teams), min(int(s["draft_slot"]), int(teams)), 1)
 
         st.markdown("### Starting lineup")
-        r1, r2, r3, r4, r5, r6, r7 = st.columns(7)
+        r1, r2 = st.columns(2)
         qb = r1.number_input("QB", 1, 3, int(s["roster"].get("QB", 1)))
         rb = r2.number_input("RB", 1, 4, int(s["roster"].get("RB", 2)))
+        r3, r4 = st.columns(2)
         wr = r3.number_input("WR", 1, 5, int(s["roster"].get("WR", 2)))
         te = r4.number_input("TE", 0, 3, int(s["roster"].get("TE", 1)))
+        r5, r6 = st.columns(2)
         flex = r5.number_input("FLEX", 0, 4, int(s["roster"].get("FLEX", 2)))
         k = r6.number_input("K", 0, 1, int(s["roster"].get("K", 0)))
+        r7, r8 = st.columns(2)
         defense = r7.number_input("DEF", 0, 1, int(s["roster"].get("DEF", 0)))
-        x1, x2, x3 = st.columns(3)
-        bench = x1.number_input("Bench", 3, 12, int(s["roster"].get("BENCH", 6)))
-        faab = x2.number_input("FAAB budget", 0, 1000, int(s.get("faab_budget", 100)), 5)
-        playoff_teams = x3.selectbox("Playoff teams", [4, 6, 8], index=[4, 6, 8].index(int(s.get("playoff_teams", 6))) if int(s.get("playoff_teams", 6)) in [4, 6, 8] else 1)
+        bench = r8.number_input("Bench", 3, 12, int(s["roster"].get("BENCH", 6)))
+        x1, x2 = st.columns(2)
+        faab = x1.number_input("FAAB budget", 0, 1000, int(s.get("faab_budget", 100)), 5)
+        playoff_teams = x2.selectbox("Playoff teams", [4, 6, 8], index=[4, 6, 8].index(int(s.get("playoff_teams", 6))) if int(s.get("playoff_teams", 6)) in [4, 6, 8] else 1)
         submitted = st.form_submit_button("Save league settings", type="primary", use_container_width=True)
         if submitted:
             st.session_state.settings = {
@@ -397,13 +486,41 @@ elif page == "My Team":
 # ------------------------------ Season Simulator ------------------------------
 elif page == "Season Simulator":
     hero("GAME WEEK", "Season Simulator", "Advance one week at a time. Every team gets scores, transactions matter, injuries persist and standings update.")
+
+    save_col, import_col = st.columns(2)
+    quick_save = season_save_text()
+    if quick_save is not None:
+        draft_for_name = st.session_state.draft or {"settings": {}}
+        league_file = str(draft_for_name.get("settings", {}).get("league_name", "fantasy_gm")).strip().lower().replace(" ", "_")
+        save_col.download_button(
+            "💾 Save Season", quick_save, f"{league_file}_season.json", "application/json",
+            use_container_width=True,
+        )
+    else:
+        save_col.button("💾 Save Season", disabled=True, use_container_width=True)
+    if import_col.button("📥 Import Season", use_container_width=True):
+        st.session_state.show_season_import = not st.session_state.show_season_import
+    if st.session_state.show_season_import:
+        with st.container(border=True):
+            season_upload = st.file_uploader("Choose Fantasy GM season save", type=["json"], key="season_quick_import")
+            if season_upload and st.button("Load Imported Season", type="primary", use_container_width=True):
+                try:
+                    data = deserialize_state(season_upload.getvalue().decode("utf-8"))
+                    load_save_payload(data)
+                    st.session_state.show_season_import = False
+                    st.success("Season imported.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Could not import season: {exc}")
+
     if require_draft() and ensure_season():
         d, season = st.session_state.draft, st.session_state.season
         u = current_user_idx()
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2 = st.columns(2)
         c1.metric("Current week", season["week"])
         us = season["standings"][str(u)]
         c2.metric("Record", f"{us['wins']}-{us['losses']}")
+        c3, c4 = st.columns(2)
         c3.metric("Points For", f"{us['pf']:.1f}")
         c4.metric("FAAB", f"${season['faab'][str(u)]}")
 
@@ -708,25 +825,19 @@ elif page == "Data & Saves":
             st.error(f"Could not import CSV: {exc}")
 
     st.divider()
-    st.subheader("Save / load league universe")
+    st.subheader("Save / import season")
     if st.session_state.draft:
         save_text = serialize_state(st.session_state.draft, st.session_state.season, pd.DataFrame(st.session_state.custom_players) if st.session_state.custom_players else None)
-        st.download_button("Download Fantasy GM Save", save_text, "fantasy_gm_save.json", "application/json", type="primary")
+        st.download_button("💾 Save Season", save_text, "fantasy_gm_season.json", "application/json", type="primary", use_container_width=True)
     else:
-        st.caption("Start a draft before exporting a league save.")
+        st.caption("Start a draft before saving a season.")
 
-    save_upload = st.file_uploader("Load Fantasy GM save (.json)", type=["json"], key="save_import")
-    if save_upload and st.button("Load Save File"):
+    save_upload = st.file_uploader("Import Fantasy GM season (.json)", type=["json"], key="save_import")
+    if save_upload and st.button("📥 Import Season", type="primary", use_container_width=True):
         try:
             data = deserialize_state(save_upload.getvalue().decode("utf-8"))
-            st.session_state.draft = data["draft"]
-            st.session_state.season = data.get("season")
-            if data.get("players"):
-                st.session_state.custom_players = normalize_player_df(pd.DataFrame(data["players"])).to_dict(orient="records")
-                st.session_state.data_status = "Player data embedded in save file"
-            st.session_state.settings = st.session_state.draft.get("settings", st.session_state.settings)
-            st.session_state.last_week_result = None
-            st.success("Save loaded.")
+            load_save_payload(data)
+            st.success("Season imported.")
             st.rerun()
         except Exception as exc:
             st.error(f"Could not load save: {exc}")

@@ -14,14 +14,15 @@ FANTASY_POSITIONS = {"QB", "RB", "WR", "TE", "K", "DEF", "DST"}
 FLEX_POSITIONS = {"RB", "WR", "TE"}
 
 CPU_PERSONALITIES = [
-    {"name": "Balanced", "desc": "Follows value and fills needs without forcing a build."},
-    {"name": "Zero RB", "desc": "Attacks WR/TE early and waits on running back."},
-    {"name": "Hero RB", "desc": "Wants one anchor RB, then leans receiver."},
-    {"name": "QB Aggressive", "desc": "More willing to pay up for an elite quarterback."},
-    {"name": "Upside Hunter", "desc": "Chases ceiling and tolerates volatility."},
-    {"name": "ADP Purist", "desc": "Rarely reaches far beyond market rank."},
-    {"name": "TE Premium", "desc": "Prioritizes an advantage at tight end."},
-    {"name": "Chaos Agent", "desc": "More unpredictable and willing to create runs."},
+    {"name": "Balanced", "desc": "Takes falling value, builds RB/WR depth, and fills onesie positions at sensible prices."},
+    {"name": "Zero RB", "desc": "Leans WR/TE early, but still follows market value and attacks RB depth in the middle rounds."},
+    {"name": "Hero RB", "desc": "Targets one early anchor RB, then prioritizes receivers and value."},
+    {"name": "WR Anchor", "desc": "Prefers an early WR foundation and builds around target volume and depth."},
+    {"name": "Late QB", "desc": "Waits on quarterback unless an obvious value falls, then builds strong RB/WR depth."},
+    {"name": "Elite QB Value", "desc": "Will take an elite quarterback only after Round 1 and only when the price is reasonable."},
+    {"name": "Upside Hunter", "desc": "Breaks close decisions toward ceiling without making large ADP reaches."},
+    {"name": "ADP Value", "desc": "Drafts close to market and aggressively takes players who fall past ADP."},
+    {"name": "TE Advantage", "desc": "Will pay for a difference-making tight end, but avoids forcing the position."},
 ]
 
 
@@ -256,49 +257,123 @@ def roster_position_counts(roster_ids: List[str], players: pd.DataFrame) -> Dict
 
 def position_need_score(position: str, counts: Dict[str, int], settings: dict, round_no: int) -> float:
     r = settings["roster"]
-    target = {
-        "QB": r.get("QB", 0), "RB": r.get("RB", 0) + r.get("FLEX", 0) * .45,
-        "WR": r.get("WR", 0) + r.get("FLEX", 0) * .45, "TE": r.get("TE", 0) + r.get("FLEX", 0) * .10,
-        "K": r.get("K", 0), "DEF": r.get("DEF", 0),
+    starters = {
+        "QB": int(r.get("QB", 0)),
+        "RB": int(r.get("RB", 0)),
+        "WR": int(r.get("WR", 0)),
+        "TE": int(r.get("TE", 0)),
+        "K": int(r.get("K", 0)),
+        "DEF": int(r.get("DEF", 0)),
     }
-    current = counts.get(position, 0)
-    need = target.get(position, 0) - current
-    score = need * 8.0
-    # Strongly discourage a second QB/TE very early unless starters are filled elsewhere.
-    if position == "QB" and current >= max(1, r.get("QB", 1)) and round_no <= 8:
-        score -= 24
-    if position == "TE" and current >= max(1, r.get("TE", 1)) and round_no <= 8:
-        score -= 18
-    if position in {"K", "DEF"} and round_no < max(8, total_roster_size(settings) - 3):
-        score -= 80
+    flex = int(r.get("FLEX", 0))
+    current = int(counts.get(position, 0))
+
+    # FLEX makes extra RB/WR/TE useful even after their base starting slots are filled.
+    flex_weight = {"RB": .50, "WR": .45, "TE": .05}.get(position, 0)
+    target = starters.get(position, 0) + flex * flex_weight
+    need = target - current
+    score = need * 8.5
+
+    # Sensible 1QB/1TE roster construction: avoid backup onesie positions while premium
+    # RB/WR depth is still on the board.
+    if position == "QB" and current >= max(1, starters["QB"]) and round_no <= 10:
+        score -= 70
+    if position == "TE" and current >= max(1, starters["TE"]) and round_no <= 9:
+        score -= 48
+
+    # K/DST are end-game picks in normal redraft builds.
+    roster_rounds = total_roster_size(settings)
+    if position in {"K", "DEF"} and round_no < max(1, roster_rounds - 2):
+        score -= 140
+
+    # Don't leave required starters empty forever.
+    if position == "QB" and starters["QB"] > 0 and current == 0 and round_no >= 8:
+        score += 42
+    if position == "TE" and starters["TE"] > 0 and current == 0 and round_no >= 9:
+        score += 35
+    if position in {"RB", "WR"} and current < starters[position] and round_no >= 5:
+        score += 28
     return score
 
 
 def personality_bonus(personality: str, position: str, round_no: int, player: pd.Series, counts: dict) -> float:
     b = 0.0
     if personality == "Zero RB":
-        if position in {"WR", "TE"} and round_no <= 5:
-            b += 11
-        if position == "RB" and round_no <= 4:
-            b -= 13
+        if position == "WR" and round_no <= 5:
+            b += 9
+        if position == "TE" and round_no in {2, 3, 4} and counts.get("TE", 0) == 0:
+            b += 4
+        if position == "RB" and round_no <= 3:
+            b -= 8
+        if position == "RB" and round_no >= 5:
+            b += 7
     elif personality == "Hero RB":
-        if position == "RB" and counts.get("RB", 0) == 0 and round_no <= 3:
-            b += 22
+        if position == "RB" and counts.get("RB", 0) == 0 and round_no <= 2:
+            b += 16
         if position == "WR" and counts.get("RB", 0) >= 1 and round_no <= 6:
             b += 7
-    elif personality == "QB Aggressive":
-        if position == "QB" and counts.get("QB", 0) == 0 and round_no <= 5:
-            b += 20
+    elif personality == "WR Anchor":
+        if position == "WR" and counts.get("WR", 0) < 2 and round_no <= 4:
+            b += 11
+    elif personality == "Late QB":
+        if position == "QB" and round_no <= 6:
+            b -= 22
+        if position in {"RB", "WR"} and round_no <= 6:
+            b += 5
+    elif personality == "Elite QB Value":
+        if position == "QB" and counts.get("QB", 0) == 0 and 3 <= round_no <= 6:
+            b += 8
     elif personality == "Upside Hunter":
-        b += float(player["ceiling"] - player["projected_points"]) * .20
-    elif personality == "ADP Purist":
-        b -= max(0.0, float(player["adp"]) - round_no * 12) * .15
-    elif personality == "TE Premium":
-        if position == "TE" and counts.get("TE", 0) == 0 and round_no <= 5:
-            b += 19
-    elif personality == "Chaos Agent":
-        b += random.uniform(-16, 16)
+        b += min(8.0, float(player["ceiling"] - player["projected_points"]) * .10)
+    elif personality == "ADP Value":
+        # The main market score already rewards falling players; this profile amplifies it.
+        b += max(0.0, round_no * 12 - float(player["adp"])) * .08
+    elif personality == "TE Advantage":
+        if position == "TE" and counts.get("TE", 0) == 0 and 2 <= round_no <= 5:
+            b += 10
     return b
+
+
+def _strategic_candidate_allowed(position: str, counts: Dict[str, int], settings: dict, round_no: int, personality: str = "Balanced") -> bool:
+    """Hard guardrails that keep CPU teams inside normal 1QB redraft strategy."""
+    r = settings["roster"]
+    roster_rounds = total_roster_size(settings)
+
+    if int(r.get(position, 0)) <= 0 and position not in FLEX_POSITIONS:
+        return False
+
+    # The user's requested common-sense rule: no CPU quarterback in Round 1.
+    # In standard 1QB builds Round 1 is reserved for RB/WR; TE can enter later.
+    if round_no == 1 and position not in {"RB", "WR"}:
+        return False
+
+    # No QB before Round 3 in a normal one-QB league.
+    if position == "QB" and round_no <= 2:
+        return False
+
+    # One QB/TE is enough for most teams. Only a subset of strategic profiles will spend
+    # a final-round bench spot on a backup, which prevents every CPU from hoarding QBs.
+    if position == "QB" and counts.get("QB", 0) >= max(1, int(r.get("QB", 1))):
+        backup_qb_profiles = {"Balanced", "ADP Value", "Elite QB Value"}
+        if round_no < max(11, roster_rounds - 1) or personality not in backup_qb_profiles:
+            return False
+    if position == "TE" and counts.get("TE", 0) >= max(1, int(r.get("TE", 1))):
+        backup_te_profiles = {"TE Advantage", "Upside Hunter", "Zero RB"}
+        if round_no < max(10, roster_rounds - 2) or personality not in backup_te_profiles:
+            return False
+
+    # Kicker and defense belong at the end of the draft, not the middle rounds.
+    if position in {"K", "DEF"} and round_no < max(1, roster_rounds - 2):
+        return False
+    if position in {"K", "DEF"} and counts.get(position, 0) >= int(r.get(position, 0)):
+        return False
+
+    # Prevent silly bench hoarding at onesie positions.
+    if position == "QB" and counts.get("QB", 0) >= max(2, int(r.get("QB", 1))):
+        return False
+    if position == "TE" and counts.get("TE", 0) >= max(2, int(r.get("TE", 1)) + 1):
+        return False
+    return True
 
 
 def cpu_pick_player(draft: dict, players: pd.DataFrame, team_idx: int) -> str:
@@ -306,20 +381,31 @@ def cpu_pick_player(draft: dict, players: pd.DataFrame, team_idx: int) -> str:
     avail = players[~players["player_id"].isin(taken)].copy()
     roster = draft["rosters"][str(team_idx)]
     counts = roster_position_counts(roster, players)
-    round_no = draft["pick_index"] // int(draft["settings"]["teams"]) + 1
+    teams = int(draft["settings"]["teams"])
+    round_no = draft["pick_index"] // teams + 1
+    overall = draft["pick_index"] + 1
     manager = next(m for m in draft["managers"] if m["team_index"] == team_idx)
 
-    # Limit evaluation to a market-relevant window so CPUs cannot make absurd deep reaches.
-    avail = avail.sort_values(["adp", "projected_points"], ascending=[True, False]).head(45)
+    # Evaluate a market-relevant window, then apply hard strategic filters. This preserves
+    # ADP realism while still allowing modest reaches for roster construction.
+    avail = avail.sort_values(["adp", "projected_points"], ascending=[True, False]).head(60)
+    allowed = avail[avail["position"].map(lambda pos: _strategic_candidate_allowed(str(pos), counts, draft["settings"], round_no, manager["personality"]))]
+    if not allowed.empty:
+        avail = allowed
+
     rng = random.Random(draft["seed"] + draft["pick_index"] * 997 + team_idx * 37)
     scored = []
     for _, p in avail.iterrows():
-        market = 150 - float(p["adp"]) * .75
-        points = float(p["projected_points"]) * .18
-        need = position_need_score(p["position"], counts, draft["settings"], round_no)
-        pers = personality_bonus(manager["personality"], p["position"], round_no, p, counts)
-        chaos = rng.gauss(0, 6 if manager["personality"] != "Chaos Agent" else 11)
-        scored.append((market + points + need + pers + chaos, p["player_id"]))
+        adp = float(p["adp"])
+        # Best available remains the foundation. Falling players get rewarded while reaches
+        # beyond roughly 1.5 rounds become increasingly expensive.
+        market = 165 - adp * .82
+        value = max(0.0, overall - adp) * .75
+        reach = max(0.0, adp - (overall + teams * 1.5)) * 1.55
+        need = position_need_score(str(p["position"]), counts, draft["settings"], round_no)
+        pers = personality_bonus(manager["personality"], str(p["position"]), round_no, p, counts)
+        noise = rng.gauss(0, 2.4)
+        scored.append((market + value - reach + need + pers + noise, str(p["player_id"])))
     scored.sort(reverse=True)
     return scored[0][1]
 
@@ -945,6 +1031,48 @@ def find_trades(user_idx: int, season: dict, draft: dict, players: pd.DataFrame,
                         "acceptance": round(acceptance, 1), "score": score,
                         "reason": "You consolidate two assets into one starter while the other roster gains useful depth."
                     })
+
+    # If two well-built rosters have no obvious positional holes, still return a few
+    # realistic value-neutral swaps instead of an empty trade finder. These are held to
+    # stricter fairness thresholds and may only slightly change either starting lineup.
+    if not results:
+        for other_idx in range(int(settings["teams"])):
+            if other_idx == user_idx:
+                continue
+            other_roster = season["rosters"][str(other_idx)]
+            other_df = players[players["player_id"].isin(other_roster)].copy()
+            other_df["tv"] = other_df.apply(trade_value, axis=1)
+            your_candidates = user_df.sort_values("tv", ascending=False).head(6)
+            their_candidates = other_df.sort_values("tv", ascending=False).head(6)
+            for _, give in your_candidates.iterrows():
+                for _, get in their_candidates.iterrows():
+                    if give["position"] == get["position"] and abs(float(give["tv"]) - float(get["tv"])) < 1.0:
+                        continue
+                    raw = trade_evaluation([give["player_id"]], [get["player_id"]], players)
+                    if raw["fairness"] < 78:
+                        continue
+                    new_you = [p for p in user_roster if p != give["player_id"]] + [str(get["player_id"])]
+                    new_them = [p for p in other_roster if p != get["player_id"]] + [str(give["player_id"])]
+                    yi = fast_strength(new_you) - baseline[user_idx]
+                    ti = fast_strength(new_them) - baseline[other_idx]
+                    if yi < -.75 or ti < -.75:
+                        continue
+                    acceptance = max(5, min(92, raw["fairness"] * .60 + min(18, max(-18, ti * 8)) + 10))
+                    results.append({
+                        "partner_index": other_idx, "partner": managers[other_idx]["team_name"],
+                        "give_ids": [str(give["player_id"])], "get_ids": [str(get["player_id"])],
+                        "give": give["name"], "get": get["name"],
+                        **raw, "your_improvement": round(yi, 2), "their_improvement": round(ti, 2),
+                        "acceptance": round(acceptance, 1),
+                        "score": raw["fairness"] + yi * 7 + ti * 7 + acceptance * .20,
+                        "reason": "Both rosters are balanced, so this is a market-value swap with limited downside for either side."
+                    })
+                    if len(results) >= max_results * 2:
+                        break
+                if len(results) >= max_results * 2:
+                    break
+            if len(results) >= max_results * 2:
+                break
 
     seen = set()
     unique = []
