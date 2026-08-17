@@ -1,0 +1,13 @@
+{
+  "name": "Huddle",
+  "short_name": "Huddle",
+  "description": "2026 fantasy football mock drafts, season simulation, and trade tools.",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0C1116",
+  "theme_color": "#0C1116",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

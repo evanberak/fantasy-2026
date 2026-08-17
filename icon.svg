@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="112" fill="#0C1116"/>
+  <rect x="96" y="120" width="14" height="272" fill="#FFD400"/>
+  <text x="150" y="326" font-family="Impact, 'Barlow Condensed', sans-serif" font-size="200"
+        fill="#E9EEF2" letter-spacing="-6">H</text>
+</svg>
