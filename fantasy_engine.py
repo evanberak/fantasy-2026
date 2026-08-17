@@ -14,16 +14,39 @@ FANTASY_POSITIONS = {"QB", "RB", "WR", "TE", "K", "DEF", "DST"}
 FLEX_POSITIONS = {"RB", "WR", "TE"}
 
 CPU_PERSONALITIES = [
-    {"name": "Balanced", "desc": "Takes falling value, builds RB/WR depth, and fills onesie positions at sensible prices."},
-    {"name": "Zero RB", "desc": "Leans WR/TE early, but still follows market value and attacks RB depth in the middle rounds."},
-    {"name": "Hero RB", "desc": "Targets one early anchor RB, then prioritizes receivers and value."},
-    {"name": "WR Anchor", "desc": "Prefers an early WR foundation and builds around target volume and depth."},
-    {"name": "Late QB", "desc": "Waits on quarterback unless an obvious value falls, then builds strong RB/WR depth."},
-    {"name": "Elite QB Value", "desc": "Will take an elite quarterback only after Round 1 and only when the price is reasonable."},
-    {"name": "Upside Hunter", "desc": "Breaks close decisions toward ceiling without making large ADP reaches."},
-    {"name": "ADP Value", "desc": "Drafts close to market and aggressively takes players who fall past ADP."},
-    {"name": "TE Advantage", "desc": "Will pay for a difference-making tight end, but avoids forcing the position."},
+    {"name": "Balanced", "desc": "Builds a complete roster, takes falling value, and rarely forces a position."},
+    {"name": "Zero RB", "desc": "Leans WR/TE early, then attacks RB volume and upside in the middle rounds."},
+    {"name": "Hero RB", "desc": "Targets one early anchor RB, then builds WR strength before returning to RB depth."},
+    {"name": "RB Bully", "desc": "Aggressively builds an early RB advantage, but still respects ADP and roster balance."},
+    {"name": "WR Avalanche", "desc": "Builds a deep WR room early and is comfortable piecing together RB later."},
+    {"name": "WR Anchor", "desc": "Prioritizes one or two high-end receivers, then drafts a balanced roster around them."},
+    {"name": "Late QB", "desc": "Waits on quarterback and spends early capital on RB/WR depth unless extreme value falls."},
+    {"name": "Elite QB Value", "desc": "Shops for a top quarterback in Rounds 3–6, but will not force one above market."},
+    {"name": "TE Advantage", "desc": "Will pay for a difference-making tight end in the early-middle rounds, then avoids TE hoarding."},
+    {"name": "Upside Hunter", "desc": "Breaks close decisions toward ceiling and volatility, especially on bench picks."},
+    {"name": "Safe Floor", "desc": "Prefers reliable weekly production and lower-volatility players when values are close."},
+    {"name": "ADP Value", "desc": "Stays disciplined to the market and aggressively takes players who slide past ADP."},
+    {"name": "Depth Builder", "desc": "Fills starters sensibly, then piles up useful RB/WR depth instead of backup onesie positions."},
 ]
+
+CPU_TEAM_NAMES = [
+    "Fourth & Long", "Gridiron Goblins", "Sunday Scaries", "Red Zone Rebels", "Waiver Wolves",
+    "Goal Line Bandits", "Bye Week Blues", "Touchdown Dept", "Two Minute Drill", "Bench Mob",
+    "End Zone Empire", "The Audible", "Pocket Presence", "Monday Miracles", "First Down Club",
+    "Sunday Syndicate",
+]
+
+
+def cpu_personality_names() -> List[str]:
+    return [p["name"] for p in CPU_PERSONALITIES]
+
+
+def cpu_personality_description(name: str) -> str:
+    return next((p["desc"] for p in CPU_PERSONALITIES if p["name"] == name), "Strategic fantasy manager.")
+
+
+def cpu_team_name(team_index: int) -> str:
+    return CPU_TEAM_NAMES[int(team_index) % len(CPU_TEAM_NAMES)]
 
 
 def default_settings() -> dict:
@@ -213,24 +236,28 @@ def snake_pick_order(num_teams: int, rounds: int) -> List[int]:
     return order
 
 
-def make_cpu_managers(num_teams: int, user_idx: int, seed: int = 42) -> List[dict]:
+def make_cpu_managers(num_teams: int, user_idx: int, seed: int = 42, personality_overrides: Optional[dict] = None) -> List[dict]:
     rng = random.Random(seed)
-    fun_names = [
-        "Fourth & Long", "Gridiron Goblins", "Sunday Scaries", "Red Zone Rebels", "Waiver Wolves",
-        "Goal Line Bandits", "Bye Week Blues", "Touchdown Dept", "Two Minute Drill", "Bench Mob",
-        "End Zone Empire", "The Audible", "Pocket Presence", "Monday Miracles", "First Down Club",
-    ]
+    personality_overrides = personality_overrides or {}
+    valid_names = set(cpu_personality_names())
     managers = []
     for i in range(num_teams):
         if i == user_idx:
             managers.append({"team_index": i, "team_name": "My Team", "personality": "User", "desc": "You control this team."})
         else:
-            pers = rng.choice(CPU_PERSONALITIES)
-            managers.append({"team_index": i, "team_name": fun_names[i % len(fun_names)], "personality": pers["name"], "desc": pers["desc"]})
+            selected = personality_overrides.get(str(i), personality_overrides.get(i))
+            if selected not in valid_names:
+                selected = rng.choice(CPU_PERSONALITIES)["name"]
+            managers.append({
+                "team_index": i,
+                "team_name": cpu_team_name(i),
+                "personality": selected,
+                "desc": cpu_personality_description(selected),
+            })
     return managers
 
 
-def new_draft_state(settings: dict, seed: int = 42) -> dict:
+def new_draft_state(settings: dict, seed: int = 42, personality_overrides: Optional[dict] = None) -> dict:
     user_idx = int(settings["draft_slot"]) - 1
     settings = copy.deepcopy(settings)
     settings["user_team_index"] = user_idx
@@ -239,7 +266,7 @@ def new_draft_state(settings: dict, seed: int = 42) -> dict:
     return {
         "seed": seed,
         "settings": settings,
-        "managers": make_cpu_managers(teams, user_idx, seed),
+        "managers": make_cpu_managers(teams, user_idx, seed, personality_overrides),
         "order": snake_pick_order(teams, rounds),
         "pick_index": 0,
         "picks": [],
@@ -298,39 +325,68 @@ def position_need_score(position: str, counts: Dict[str, int], settings: dict, r
 
 def personality_bonus(personality: str, position: str, round_no: int, player: pd.Series, counts: dict) -> float:
     b = 0.0
+    current = int(counts.get(position, 0))
     if personality == "Zero RB":
         if position == "WR" and round_no <= 5:
-            b += 9
+            b += 11
         if position == "TE" and round_no in {2, 3, 4} and counts.get("TE", 0) == 0:
             b += 4
         if position == "RB" and round_no <= 3:
-            b -= 8
+            b -= 10
         if position == "RB" and round_no >= 5:
-            b += 7
+            b += 9
     elif personality == "Hero RB":
         if position == "RB" and counts.get("RB", 0) == 0 and round_no <= 2:
-            b += 16
+            b += 18
         if position == "WR" and counts.get("RB", 0) >= 1 and round_no <= 6:
-            b += 7
+            b += 8
+        if position == "RB" and counts.get("RB", 0) >= 1 and round_no <= 4:
+            b -= 5
+    elif personality == "RB Bully":
+        if position == "RB" and round_no <= 4 and current < 3:
+            b += 13
+        if position == "WR" and round_no >= 3 and counts.get("WR", 0) < 2:
+            b += 4
+    elif personality == "WR Avalanche":
+        if position == "WR" and round_no <= 5 and current < 4:
+            b += 13
+        if position == "RB" and round_no <= 2:
+            b -= 4
+        if position == "RB" and round_no >= 5:
+            b += 5
     elif personality == "WR Anchor":
         if position == "WR" and counts.get("WR", 0) < 2 and round_no <= 4:
             b += 11
     elif personality == "Late QB":
         if position == "QB" and round_no <= 6:
-            b -= 22
+            b -= 24
         if position in {"RB", "WR"} and round_no <= 6:
             b += 5
     elif personality == "Elite QB Value":
         if position == "QB" and counts.get("QB", 0) == 0 and 3 <= round_no <= 6:
-            b += 8
+            b += 12
+        if position == "QB" and round_no >= 8:
+            b -= 4
     elif personality == "Upside Hunter":
-        b += min(8.0, float(player["ceiling"] - player["projected_points"]) * .10)
+        upside = float(player["ceiling"] - player["projected_points"])
+        b += min(10.0, upside * .13)
+        if round_no >= 8:
+            b += min(5.0, float(player.get("volatility", .22)) * 14)
+    elif personality == "Safe Floor":
+        volatility = float(player.get("volatility", .22))
+        floor_ratio = float(player["floor"]) / max(float(player["projected_points"]), 1.0)
+        b += max(-4.0, min(9.0, (floor_ratio - .68) * 34))
+        b += max(-3.0, min(5.0, (.25 - volatility) * 22))
     elif personality == "ADP Value":
-        # The main market score already rewards falling players; this profile amplifies it.
-        b += max(0.0, round_no * 12 - float(player["adp"])) * .08
+        b += max(0.0, round_no * 12 - float(player["adp"])) * .10
     elif personality == "TE Advantage":
         if position == "TE" and counts.get("TE", 0) == 0 and 2 <= round_no <= 5:
-            b += 10
+            b += 12
+    elif personality == "Depth Builder":
+        if position in {"RB", "WR"} and 5 <= round_no <= 11:
+            b += 7
+        if position in {"QB", "TE"} and current >= 1:
+            b -= 12
     return b
 
 

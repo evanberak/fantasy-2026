@@ -13,10 +13,13 @@ import requests
 import streamlit as st
 
 from fantasy_engine import (
+    CPU_PERSONALITIES,
     advance_cpu_until_user,
     auto_lineup,
     build_sleeper_projection_df,
     compare_players,
+    cpu_personality_description,
+    cpu_team_name,
     default_settings,
     deserialize_state,
     execute_trade,
@@ -44,7 +47,7 @@ from roster_vision import extract_roster_names
 
 APP_DIR = Path(__file__).resolve().parent
 SAMPLE_CSV = APP_DIR / "data" / "sample_projection_import.csv"
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.3.0"
 
 st.set_page_config(page_title="Fantasy GM 2026", page_icon="🏈", layout="centered", initial_sidebar_state="collapsed")
 
@@ -128,6 +131,10 @@ def init_state():
         st.session_state.vision_names = []
     if "show_season_import" not in st.session_state:
         st.session_state.show_season_import = False
+    if "cpu_personality_setup" not in st.session_state:
+        st.session_state.cpu_personality_setup = {}
+    if "cpu_personality_signature" not in st.session_state:
+        st.session_state.cpu_personality_signature = None
 
 
 init_state()
@@ -218,6 +225,66 @@ def load_save_payload(data: dict) -> None:
     st.session_state.settings = st.session_state.draft.get("settings", st.session_state.settings)
     st.session_state.last_week_result = None
     st.session_state.trade_results = []
+
+
+def ensure_cpu_personality_setup() -> dict:
+    """Keep a selectable strategic CPU profile attached to every non-user draft slot."""
+    teams = int(st.session_state.settings["teams"])
+    user_idx = int(st.session_state.settings.get("draft_slot", 1)) - 1
+    signature = f"{teams}:{user_idx}"
+    names = [p["name"] for p in CPU_PERSONALITIES]
+
+    if st.session_state.cpu_personality_signature != signature:
+        for i in range(16):
+            st.session_state.pop(f"cpu_personality_{i}", None)
+        rng = random.Random(2026 + teams * 101 + user_idx * 17)
+        mix = names.copy()
+        rng.shuffle(mix)
+        setup = {}
+        cpu_counter = 0
+        for i in range(teams):
+            if i == user_idx:
+                continue
+            if cpu_counter and cpu_counter % len(mix) == 0:
+                rng.shuffle(mix)
+            selected = mix[cpu_counter % len(mix)]
+            setup[str(i)] = selected
+            st.session_state[f"cpu_personality_{i}"] = selected
+            cpu_counter += 1
+        st.session_state.cpu_personality_setup = setup
+        st.session_state.cpu_personality_signature = signature
+    else:
+        for i in range(teams):
+            if i == user_idx:
+                continue
+            key = f"cpu_personality_{i}"
+            selected = st.session_state.cpu_personality_setup.get(str(i), "Balanced")
+            if selected not in names:
+                selected = "Balanced"
+            if key not in st.session_state or st.session_state[key] not in names:
+                st.session_state[key] = selected
+    return st.session_state.cpu_personality_setup
+
+
+def randomize_cpu_personalities() -> None:
+    teams = int(st.session_state.settings["teams"])
+    user_idx = int(st.session_state.settings.get("draft_slot", 1)) - 1
+    names = [p["name"] for p in CPU_PERSONALITIES]
+    rng = random.Random()
+    shuffled = names.copy()
+    rng.shuffle(shuffled)
+    setup = {}
+    cpu_counter = 0
+    for i in range(teams):
+        if i == user_idx:
+            continue
+        if cpu_counter and cpu_counter % len(shuffled) == 0:
+            rng.shuffle(shuffled)
+        selected = shuffled[cpu_counter % len(shuffled)]
+        setup[str(i)] = selected
+        st.session_state[f"cpu_personality_{i}"] = selected
+        cpu_counter += 1
+    st.session_state.cpu_personality_setup = setup
 
 
 def season_save_text() -> str | None:
@@ -362,17 +429,55 @@ elif page == "League Setup":
 
 # ------------------------------ Mock Draft ------------------------------
 elif page == "Mock Draft":
-    hero("WAR ROOM", "Snake Mock Draft", "Draft every round, then carry the exact rosters into the season simulator.")
-    col_new, col_seed, col_blank = st.columns([1.2, 1, 3])
-    seed = col_seed.number_input("Draft seed", 1, 999999, 2026, label_visibility="collapsed")
-    if col_new.button("Start New Draft", type="primary", use_container_width=True):
-        st.session_state.draft = new_draft_state(st.session_state.settings, int(seed))
+    hero("WAR ROOM", "Snake Mock Draft", "Choose how every CPU drafts, then carry the exact rosters into the season simulator.")
+
+    cpu_setup = ensure_cpu_personality_setup()
+    personality_names = [p["name"] for p in CPU_PERSONALITIES]
+    teams_for_setup = int(st.session_state.settings["teams"])
+    user_for_setup = int(st.session_state.settings.get("draft_slot", 1)) - 1
+
+    with st.expander("🧠 CPU Draft Personalities", expanded=not bool(st.session_state.draft)):
+        st.caption("Assign a strategy to every opponent before the draft. Personalities change positional priorities and risk preference, but all CPUs still obey the realistic draft guardrails.")
+        action1, action2 = st.columns(2)
+        if action1.button("🎲 Randomize Personalities", use_container_width=True):
+            randomize_cpu_personalities()
+            st.rerun()
+        if action2.button("⚖️ Set All Balanced", use_container_width=True):
+            for i in range(teams_for_setup):
+                if i == user_for_setup:
+                    continue
+                st.session_state.cpu_personality_setup[str(i)] = "Balanced"
+                st.session_state[f"cpu_personality_{i}"] = "Balanced"
+            st.rerun()
+
+        st.markdown(f"**Your slot:** Pick {user_for_setup + 1} — My Team")
+        personality_cols = st.columns(2)
+        cpu_num = 0
+        for i in range(teams_for_setup):
+            if i == user_for_setup:
+                continue
+            widget_key = f"cpu_personality_{i}"
+            with personality_cols[cpu_num % 2]:
+                selected = st.selectbox(
+                    f"{cpu_team_name(i)} • Pick {i + 1}",
+                    personality_names,
+                    key=widget_key,
+                )
+                st.session_state.cpu_personality_setup[str(i)] = selected
+                st.caption(cpu_personality_description(selected))
+            cpu_num += 1
+
+    launch_left, launch_right = st.columns([1.45, 1])
+    seed = launch_right.number_input("Draft seed", 1, 999999, 2026)
+    if launch_left.button("Start New Draft", type="primary", use_container_width=True):
+        personality_overrides = dict(st.session_state.cpu_personality_setup)
+        st.session_state.draft = new_draft_state(st.session_state.settings, int(seed), personality_overrides)
         st.session_state.season = None
         advance_cpu_until_user(st.session_state.draft, players)
         st.rerun()
 
     if not st.session_state.draft:
-        st.info("Click **Start New Draft**. CPU teams will draft until your first pick.")
+        st.info("Choose the CPU strategies above, then tap **Start New Draft**. CPU teams will draft until your first pick.")
     else:
         d = st.session_state.draft
         teams = int(d["settings"]["teams"])

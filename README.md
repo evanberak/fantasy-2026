@@ -1,10 +1,10 @@
-# Fantasy GM 2026 — v0.2.0
+# Fantasy GM 2026 — v0.3.0
 
 A Streamlit fantasy-football sandbox built around one persistent league state: mock draft -> roster -> lineup -> waivers -> trades -> weekly simulation -> playoffs.
 
 ## Main features
 - Mobile-first Streamlit UI with large tap targets, pill navigation, compact cards, and phone-friendly two-column layouts.
-- Snake mock drafts with strategic CPU profiles, ADP discipline, roster-aware drafting, no Round 1 CPU QBs, late K/DST logic, and controlled backup-QB/TE usage.
+- Snake mock drafts with **selectable CPU personalities before every draft**, ADP discipline, roster-aware drafting, no Round 1 CPU QBs, late K/DST logic, and controlled backup-QB/TE usage.
 - One-tap **Get Latest Version** rerun/refresh control in the app header.
 - **Save Season** and **Import Season** controls directly on the Season screen; saves include draft, rosters, standings, transactions, injuries, FAAB, and embedded custom player data when present.
 - Lineup manager with auto-optimize plus manual slot selection.
@@ -16,6 +16,13 @@ A Streamlit fantasy-football sandbox built around one persistent league state: m
 - Screenshot roster extraction using OpenAI vision when `OPENAI_API_KEY` is configured; manual paste fallback always works.
 - Fantasy Lab for Monte Carlo "what if" comparisons.
 - Sleeper player-pool refresh for current names/teams; custom projection CSV import for serious use.
+
+## v0.3.0 changes
+- Added a pre-draft CPU Personality setup panel with one selector per opponent.
+- Added **Randomize Personalities** and **Set All Balanced** shortcuts.
+- Expanded strategic profiles: Balanced, Zero RB, Hero RB, RB Bully, WR Avalanche, WR Anchor, Late QB, Elite QB Value, TE Advantage, Upside Hunter, Safe Floor, ADP Value, and Depth Builder.
+- Personalities now materially alter position preference, risk tolerance, and depth-building behavior while still respecting hard common-sense draft guardrails.
+- Selected CPU personalities are stored in the draft state and survive Save Season / Import Season.
 
 ## v0.2.0 changes
 - Rebuilt the navigation around mobile-friendly pill controls.
