@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 
 /* ============================================================
-   HUDDLE — 2026 fantasy football command center
+   HUDDLE, a 2026 fantasy football command center
    Data: consensus PPR ADP (top 300) as of Aug 10 2026, real byes
    ============================================================ */
 
@@ -431,7 +431,7 @@ export function gauss(rng) {
 }
 
 /* ============================================================
-   ENGINE — draft AI, player valuation, season simulation
+   ENGINE: CPU drafting, player valuation, season simulation
    ============================================================ */
 
 export function makeLeague(cfg) {
@@ -478,7 +478,7 @@ function rosterCounts(ids) {
   return c;
 }
 
-/* ---- CPU drafting: hard roster rules + tier/dropoff reasoning ----
+/* ---- CPU drafting: hard roster rules plus tier and dropoff reasoning ----
    These GMs draft the way a good league drafts: starters before backups,
    never a kicker in round 9, never a third QB, and they weigh how much
    value actually falls off before their next turn instead of just ADP. */
@@ -489,7 +489,7 @@ function startersWanted(superflex) {
     ? { QB: 2, RB: 2, WR: 3, TE: 1, K: 1, DST: 1 }
     : { QB: 1, RB: 2, WR: 3, TE: 1, K: 1, DST: 1 };
 }
-// hard ceilings — nobody rosters five tight ends
+// hard ceilings. nobody rosters five tight ends
 function posCap(superflex) {
   return superflex
     ? { QB: 3, RB: 6, WR: 7, TE: 2, K: 1, DST: 1 }
@@ -568,7 +568,7 @@ export function aiPick(lg, gmIdx, available) {
     // 1. how much value evaporates at this position if we wait one turn
     const fallback = bestNext[p.pos] ? proj(bestNext[p.pos], ppr) : pts * 0.75;
     const dropoff = Math.max(0, pts - fallback);
-    // 2. tier break — real gap to the next man at the position
+    // 2. tier break: real gap to the next man at the position
     const same = available.filter((x) => x.pos === p.pos);
     const idx = same.findIndex((x) => x.id === p.id);
     const tier = same[idx + 1] ? Math.max(0, pts - proj(same[idx + 1], ppr)) : 0;
@@ -577,12 +577,12 @@ export function aiPick(lg, gmIdx, available) {
     const roleWeight = have < want[p.pos] ? 1.0
       : have === want[p.pos] ? 0.78                 // flex / handcuff value
         : Math.max(0.32, 0.62 - (have - want[p.pos]) * 0.12);
-    // 4. don't reach into next week — ADP discipline, loosened late
+    // 4. don't reach into next week. ADP discipline, loosened late
     const reachPenalty = Math.max(0, p.adp - overall - 6 - round * 1.5) * (1.6 / (1 + round * 0.12));
     // 5. bye-week hygiene
     const byeClash = ids.filter((id) => BY_ID[id].bye === p.bye).length;
     const byePenalty = byeClash >= 3 ? 9 : byeClash >= 2 ? 3 : 0;
-    // 6. late-round upside chase — swing on variance when it's free
+    // 6. late-round upside chase. swing on variance when it's free
     const upside = round > rounds * 0.62 ? p.spread * 34 : 0;
 
     const persona = -(P.posBias[p.pos] || 0) * 2.1;
@@ -702,7 +702,7 @@ export function startSeason(lg, seed = Date.now()) {
   const rostered = new Set(Object.values(lg.rosters).flat());
   const talent = {};
   for (const p of PLAYERS) {
-    // hidden true-talent draw — this is what makes the waiver wire matter
+    // hidden true-talent draw. this is what makes the waiver wire matter
     talent[p.id] = Math.max(0.28, 1 + gauss(rng) * p.spread);
   }
   return {
@@ -894,7 +894,7 @@ export function runWaivers(lg, state, userClaims) {
   return results;
 }
 
-// classic rolling waiver priority — no money, worst record picks first
+// classic rolling waiver priority. no money, worst record picks first
 function runPriorityWaivers(lg, state, userClaims) {
   const values = buildValues(lg, state);
   const results = [];
@@ -927,7 +927,7 @@ function runPriorityWaivers(lg, state, userClaims) {
   return results;
 }
 
-/* -------- AI trade offers -------- */
+/* -------- CPU trade offers -------- */
 
 export function generateOffer(lg, state) {
   const values = buildValues(lg, state);
@@ -958,7 +958,7 @@ export function generateOffer(lg, state) {
   return { gm: partner.idx, wants: [target], gives: bestPkg, note: `${partner.name} needs ${need} help.` };
 }
 
-// AI response to a trade the user proposes. They weigh raw value AND roster fit —
+// CPU response to a trade the user proposes. They weigh raw value AND roster fit,
 // a team stacked at RB won't take a fourth one no matter how good the value is.
 export function evaluateOffer(lg, state, partnerIdx, iSend, iGet) {
   const values = buildValues(lg, state);
@@ -990,7 +990,7 @@ export function evaluateOffer(lg, state, partnerIdx, iSend, iGet) {
   if (accept) {
     reply = incomingHelps
       ? `Done. I need ${theirNeed} help and this gets me there.`
-      : `I'll take that — the value works for me.`;
+      : `I'll take that. The value works for me.`;
   } else if (close) {
     reply = `Close, but not quite. Sweeten it slightly and I'm in.`;
   } else if (v.pct < -18) {
@@ -1184,7 +1184,7 @@ function PlayerRow({ p, right, onClick, tag, sub }) {
         <div className="nm" style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
           {p.name} {tag && <span className={`tag ${tag.c}`} style={{ marginLeft: 4 }}>{tag.t}</span>}
         </div>
-        <div className="sub">{sub ?? `${p.team} · Bye ${p.bye || "—"} · ADP ${p.adp}`}</div>
+        <div className="sub">{sub ?? `${p.team} · Bye ${p.bye || "TBD"} · ADP ${p.adp}`}</div>
       </div>
       {right}
     </div>
@@ -1255,7 +1255,7 @@ function MockHome({ onOpen, onCreate }) {
         <div className="eyebrow">2026 season · consensus ADP through Aug 10</div>
         <h1 style={{ fontSize: 34, marginTop: 5 }}>Mock Season</h1>
         <div className="mini" style={{ marginTop: 7, maxWidth: 430 }}>
-          Draft against seven distinct personalities, then play the year out — injuries, breakouts,
+          Draft against seven distinct personalities, then play the year out. Injuries, breakouts,
           bidding wars, and a trade market that pushes back.
         </div>
       </div>
@@ -1332,7 +1332,7 @@ function MockHome({ onOpen, onCreate }) {
             </div>
           )}
           <div className="mini" style={{ marginTop: 6 }}>
-            {cfg.waiverMode === "faab" ? "Blind bidding — highest bid takes the player." : "No money. Worst record claims first, then drops to the back of the line."}
+            {cfg.waiverMode === "faab" ? "Blind bidding. Highest bid takes the player." : "No money. Worst record claims first, then drops to the back of the line."}
           </div>
         </div>
         <label className="row" style={{ marginBottom: 13, cursor: "pointer" }}>
@@ -1430,7 +1430,7 @@ function DraftRoom({ lg, setLg, toast }) {
                 {isUser ? "You're on the clock" : `${lg.gms[clock].name}`}
               </h2>
               {!isUser && <div className="sub" style={{ marginTop: 3 }}>{PERSONAS.find((x) => x.key === lg.gms[clock].persona)?.label}</div>}
-              {isUser && nextUserPick && <div className="sub" style={{ marginTop: 3 }}>Next pick after this: #{(() => { for (let i = lg.picks.length + 1; i < lg.order.length; i++) if (lg.order[i] === lg.settings.userSlot) return i + 1; return "—"; })()}</div>}
+              {isUser && nextUserPick && <div className="sub" style={{ marginTop: 3 }}>Next pick after this: #{(() => { for (let i = lg.picks.length + 1; i < lg.order.length; i++) if (lg.order[i] === lg.settings.userSlot) return i + 1; return "last"; })()}</div>}
             </div>
             <div style={{ textAlign: "right" }}>
               <div className="disp num" style={{ fontSize: 30, color: "var(--first)" }}>{lg.picks.length}</div>
@@ -1498,14 +1498,14 @@ function PlayerCard({ p, lg, onDraft, available }) {
   const ppr = lg.settings.ppr;
   const posRankAvail = available ? available.filter((x) => x.pos === p.pos).findIndex((x) => x.id === p.id) + 1 : null;
   const myBye = (lg.rosters[lg.settings.userSlot] || []).filter((id) => BY_ID[id].bye === p.bye).length;
-  const risk = p.spread > 0.3 ? "High variance — wide range of outcomes" : p.spread > 0.2 ? "Moderate variance" : "Stable, well-defined role";
+  const risk = p.spread > 0.3 ? "High variance. Wide range of outcomes" : p.spread > 0.2 ? "Moderate variance" : "Stable, well-defined role";
   return (
     <div>
       <div className="row" style={{ marginBottom: 11 }}>
         <div className={POSC(p.pos)} style={{ width: 40, height: 26 }}>{p.pos === "DST" ? "DEF" : p.pos}</div>
         <div>
           <div style={{ fontWeight: 600 }}>{p.team} · {p.pos}{p.posRank}</div>
-          <div className="sub">Bye week {p.bye || "—"}</div>
+          <div className="sub">Bye week {p.bye || "TBD"}</div>
         </div>
       </div>
       <div className="grid3" style={{ marginBottom: 11 }}>
@@ -1514,7 +1514,7 @@ function PlayerCard({ p, lg, onDraft, available }) {
         <div className="stat"><b className="num">{posRankAvail ?? p.posRank}</b><span className="eyebrow">{p.pos} left</span></div>
       </div>
       <div className="mini" style={{ marginBottom: 11 }}>
-        {risk}. {myBye > 2 ? `Warning — you already roster ${myBye} players on the week ${p.bye} bye.` : ""}
+        {risk}. {myBye > 2 ? `Careful: you already roster ${myBye} players on the week ${p.bye} bye.` : ""}
       </div>
       {onDraft && <button className="btn" onClick={onDraft}>Draft {p.name}</button>}
     </div>
@@ -1595,7 +1595,7 @@ function DraftRecap({ lg }) {
                   const pk = lg.picks.find((x) => x.playerId === id);
                   const edge = pk.overall - p.adp;
                   return (
-                    <PlayerRow key={id} p={p} sub={`${roundOf(lg, pk.overall - 1)}.${String(slotOf(lg, pk.overall - 1)).padStart(2, "0")} · ${p.team} · Bye ${p.bye || "—"}`}
+                    <PlayerRow key={id} p={p} sub={`${roundOf(lg, pk.overall - 1)}.${String(slotOf(lg, pk.overall - 1)).padStart(2, "0")} · ${p.team} · Bye ${p.bye || "TBD"}`}
                       right={<div style={{ textAlign: "right" }}>
                         <div className="num" style={{ fontSize: 12, color: edge > 12 ? "var(--green)" : edge < -12 ? "var(--red)" : "var(--mute)" }}>
                           {edge > 0 ? `+${edge}` : edge}
@@ -1614,7 +1614,7 @@ function DraftRecap({ lg }) {
         <h2 style={{ fontSize: 19, marginBottom: 9 }}>Biggest value picks</h2>
         {steals.slice(0, 5).map((s) => (
           <div key={s.pk.overall} className="row sp" style={{ padding: "6px 0" }}>
-            <div className="mini" style={{ color: "var(--chalk)" }}>{s.p.name} <span style={{ color: "var(--mute)" }}>— {lg.gms[s.pk.gmIdx].name}</span></div>
+            <div className="mini" style={{ color: "var(--chalk)" }}>{s.p.name} <span style={{ color: "var(--mute)" }}>· {lg.gms[s.pk.gmIdx].name}</span></div>
             <div className="num" style={{ color: "var(--green)", fontSize: 12 }}>+{s.edge}</div>
           </div>
         ))}
@@ -1622,7 +1622,7 @@ function DraftRecap({ lg }) {
         <h2 style={{ fontSize: 19, marginBottom: 9 }}>Biggest reaches</h2>
         {steals.slice(-4).reverse().map((s) => (
           <div key={s.pk.overall} className="row sp" style={{ padding: "6px 0" }}>
-            <div className="mini" style={{ color: "var(--chalk)" }}>{s.p.name} <span style={{ color: "var(--mute)" }}>— {lg.gms[s.pk.gmIdx].name}</span></div>
+            <div className="mini" style={{ color: "var(--chalk)" }}>{s.p.name} <span style={{ color: "var(--mute)" }}>· {lg.gms[s.pk.gmIdx].name}</span></div>
             <div className="num" style={{ color: "var(--red)", fontSize: 12 }}>{s.edge}</div>
           </div>
         ))}
@@ -1658,7 +1658,7 @@ function TeamView({ lg, setLg, toast }) {
   const bench = ids.filter((id) => !lineup.includes(id));
   const projTotal = lineup.reduce((s, id) => s + (id ? values[id].ppg : 0), 0);
 
-  if (!ids.length) return <Empty text="Draft a team first — head to the Draft tab." />;
+  if (!ids.length) return <Empty text="Draft a team first. Head to the Draft tab." />;
 
   return (
     <div className="wrap">
@@ -1710,7 +1710,7 @@ function TeamView({ lg, setLg, toast }) {
           const out = season?.injuries[id] > 0;
           return <PlayerRow key={id} p={p}
             tag={out ? { c: "t-out", t: `OUT ${season.injuries[id] > 20 ? "SEA" : season.injuries[id] + "w"}` } : p.bye === week ? { c: "t-bye", t: "BYE" } : null}
-            sub={`${p.team} · Bye ${p.bye || "—"}`}
+            sub={`${p.team} · Bye ${p.bye || "TBD"}`}
             right={<div style={{ textAlign: "right" }}>
               <div className="num" style={{ fontSize: 13, fontWeight: 700 }}>{values[id].ppg.toFixed(1)}</div>
               <div className="sub">ppg</div>
@@ -1780,7 +1780,7 @@ function RosterAudit({ lg, values, ids }) {
       )}
       {realStacks.map(([team, v]) => (
         <div key={team} className="mini" style={{ marginBottom: 5 }}>
-          <b style={{ color: "var(--green)" }}>{team} stack:</b> {v.map((p) => p.name).join(" + ")} — correlated ceiling weeks.
+          <b style={{ color: "var(--green)" }}>{team} stack:</b> {v.map((p) => p.name).join(" + ")}. They boom in the same weeks.
         </div>
       ))}
       {!clashes.length && !realStacks.length && <div className="mini">Balanced build. No bye crunches, no correlation plays.</div>}
@@ -1806,7 +1806,7 @@ function SeasonView({ lg, setLg, toast, setTab }) {
   const [odds, setOdds] = useState(null);
   const [claimFor, setClaimFor] = useState(null);
 
-  if (!draftDone(lg)) return <Empty text="Finish your draft first — the season needs a full roster." />;
+  if (!draftDone(lg)) return <Empty text="Finish your draft first. The season needs a full roster." />;
 
   if (!s) {
     return (
@@ -2045,9 +2045,9 @@ function SeasonView({ lg, setLg, toast, setTab }) {
 function lineupWarn(lg, s, values) {
   const u = lg.settings.userSlot;
   const lu = s.lineups[s.week];
-  if (!lu) return "Auto-set — tap to review and change it";
+  if (!lu) return "Set for you. Tap to review and change it";
   const bad = lu.filter((id) => id && (BY_ID[id].bye === s.week || s.injuries[id] > 0));
-  if (bad.length) return `${bad.length} starter${bad.length > 1 ? "s" : ""} on bye or injured — fix it`;
+  if (bad.length) return `${bad.length} starter${bad.length > 1 ? "s" : ""} on bye or injured. Fix it`;
   const empty = lu.filter((x) => !x).length;
   if (empty) return `${empty} empty slot${empty > 1 ? "s" : ""} scoring zero`;
   return null;
@@ -2075,7 +2075,7 @@ function TradeDesk({ lg, setLg, values, toast }) {
         <div className="card">
           <div className="eyebrow">Step 1</div>
           <h2 style={{ fontSize: 21, margin: "5px 0 6px" }}>Pick a trade partner</h2>
-          <div className="mini">Each team's biggest hole is listed — target the one that needs what you have spare.</div>
+          <div className="mini">Each team's biggest hole is listed. Target the one that needs what you have spare.</div>
         </div>
         {others.map((g) => {
           const need = weakestPos(lg, g.idx, values);
@@ -2178,7 +2178,7 @@ function ChampionCard({ lg, s }) {
     <div className="card" style={{ borderColor: "var(--first)", background: "rgba(255,212,0,.07)" }}>
       <div className="eyebrow">Champion</div>
       <h1 style={{ fontSize: 32, margin: "6px 0" }}>{g.name}</h1>
-      <div className="mini">{g.isUser ? "You won it. The hidden talent draws broke your way — check the wire log to see which pickup swung it." : "Better luck next mock. Run it back from the home screen with a different draft slot."}</div>
+      <div className="mini">{g.isUser ? "You won it. The season broke your way. Check the wire log to see which pickup swung it." : "Better luck next mock. Run it back from the home screen with a different draft slot."}</div>
     </div>
   );
 }
@@ -2259,7 +2259,7 @@ function WeekRecap({ lg, wk }) {
           <h2 style={{ fontSize: 18, marginBottom: 8 }}>Injury report</h2>
           {wk.injuries.map((n) => (
             <div key={n.id} className="mini" style={{ marginBottom: 4 }}>
-              <span style={{ color: "var(--red)", fontWeight: 700 }}>{BY_ID[n.id].name}</span> — out {n.wks > 20 ? "for the season" : `${n.wks} week${n.wks > 1 ? "s" : ""}`}
+              <span style={{ color: "var(--red)", fontWeight: 700 }}>{BY_ID[n.id].name}</span> out {n.wks > 20 ? "for the season" : `${n.wks} week${n.wks > 1 ? "s" : ""}`}
             </div>
           ))}
         </div>
@@ -2307,7 +2307,7 @@ function StandingsView({ lg, s, table }) {
                 <div key={k} className="mini" style={{ marginBottom: 3 }}>
                   <b style={{ color: lg.gms[it.gm].isUser ? "var(--first)" : "var(--chalk)" }}>{lg.gms[it.gm].name}</b> added {BY_ID[it.add].name}{it.bid != null ? ` ($${it.bid})` : ""}
                   {it.drop ? `, dropped ${BY_ID[it.drop].name}` : ""}
-                  {it.losers.length ? ` — outbid ${it.losers.length}` : ""}
+                  {it.losers.length ? `, outbid ${it.losers.length}` : ""}
                 </div>
               ))}
             </div>
@@ -2345,7 +2345,7 @@ function WireView({ lg, s, values, claims, setClaims, claimFor, setClaimFor, toa
         <div className="mini" style={{ marginTop: 8 }}>
           {faab
             ? "Claims process when you sim the week. Highest bid wins; ties break by waiver order."
-            : `Claims process when you sim the week. You pick ${s.waiverOrder.indexOf(u) + 1}${["st","nd","rd"][s.waiverOrder.indexOf(u)] || "th"} this week — claiming sends you to the back of the line.`}
+            : `Claims process when you sim the week. You pick ${s.waiverOrder.indexOf(u) + 1}${["st","nd","rd"][s.waiverOrder.indexOf(u)] || "th"} this week. Claiming sends you to the back of the line.`}
         </div>
       </div>
 
@@ -2530,7 +2530,7 @@ function TradeCalc({ lg }) {
           </div>
           <div className="mini">
             Values are rest-of-season points over replacement, curved so a single elite player outweighs the raw sum of
-            two mid pieces — you only start so many.
+            two mid pieces, because you only start so many.
             {send.length > get.length && " You're consolidating, which this model rewards."}
             {get.length > send.length && " You're taking on more bodies; the depth only pays off if you can actually start it."}
           </div>
@@ -2692,7 +2692,7 @@ function ShotFinder({ lg, toast, my, save }) {
       <div className="card">
         <div className="eyebrow">Read a roster from any app</div>
         <div className="mini" style={{ margin: "6px 0 11px" }}>
-          Screenshot your roster in Sleeper, ESPN, Yahoo — whatever you use — and drop it here. Names get matched against
+          Screenshot your roster in Sleeper, ESPN, Yahoo, whatever you use, and drop it here. Names get matched against
           the 2026 player pool, then scored for trade fits.
         </div>
         <input ref={fileRef} type="file" accept="image/*" style={{ display: "none" }}
@@ -2732,7 +2732,7 @@ function ShotFinder({ lg, toast, my, save }) {
             <h2 style={{ fontSize: 26, margin: "5px 0 7px" }}>{analysis.weak}</h2>
             <div className="mini">Deals below all send out a position where this roster already has starters banked.</div>
           </div>
-          {analysis.trades.length === 0 && <div className="card"><div className="mini">No clean fits — this roster is balanced. Hold and work the wire instead.</div></div>}
+          {analysis.trades.length === 0 && <div className="card"><div className="mini">No clean fits. This roster is balanced, so hold and work the wire instead.</div></div>}
           {analysis.trades.map((t, i) => (
             <div key={i} className="card">
               <div className="row sp" style={{ marginBottom: 9 }}>
@@ -2758,7 +2758,7 @@ function ShotFinder({ lg, toast, my, save }) {
 }
 
 /* ============================================================
-   TOOLS — compare, sleepers, GM chat
+   TOOLS: compare, value radar, questions
    ============================================================ */
 
 function ToolsView({ lg, toast }) {
@@ -2766,7 +2766,7 @@ function ToolsView({ lg, toast }) {
   return (
     <div className="wrap">
       <div className="scroll-x" style={{ marginBottom: 12 }}>
-        {[["vs", "A over B"], ["sleep", "Value radar"], ["gm", "Ask your GM"]].map(([k, l]) => (
+        {[["vs", "A over B"], ["sleep", "Value radar"], ["gm", "Second opinion"]].map(([k, l]) => (
           <button key={k} className={`chip ${mode === k ? "on" : ""}`} onClick={() => setMode(k)}>{l}</button>
         ))}
       </div>
@@ -2804,7 +2804,7 @@ function Versus({ lg }) {
       onClick={() => setPick(p === a ? "a" : "b")}>
       <div className={POSC(p.pos)} style={{ marginBottom: 7 }}>{p.pos === "DST" ? "DEF" : p.pos}</div>
       <div className="nm" style={{ fontSize: 15, marginBottom: 3 }}>{p.name}</div>
-      <div className="sub" style={{ marginBottom: 9 }}>{p.team} · ADP {p.adp} · Bye {p.bye || "—"}</div>
+      <div className="sub" style={{ marginBottom: 9 }}>{p.team} · ADP {p.adp} · Bye {p.bye || "TBD"}</div>
       <div className="row sp mini"><span>Proj</span><b className="num" style={{ color: "var(--chalk)" }}>{Math.round(s.raw)}</b></div>
       <div className="row sp mini"><span>Value score</span><b className="num" style={{ color: "var(--chalk)" }}>{s.adj.toFixed(1)}</b></div>
       <div className="row sp mini"><span>Volatility</span><b className="num" style={{ color: "var(--chalk)" }}>{(s.upside * 100).toFixed(0)}%</b></div>
@@ -2826,14 +2826,14 @@ function Versus({ lg }) {
         <div className="eyebrow">The model says</div>
         <h2 style={{ fontSize: 24, margin: "6px 0 8px" }}>{winner.name}</h2>
         <div className="mini">
-          {margin < 0.06 ? "Effectively a coin flip — take the one whose role you believe in more." :
+          {margin < 0.06 ? "Effectively a coin flip. Take the one whose role you believe in more." :
             margin < 0.18 ? "A real but modest edge." : "Clear separation between these two."}
         </div>
         <div className="divider" />
         <div className="eyebrow" style={{ marginBottom: 6 }}>Why</div>
         <div className="mini" style={{ marginBottom: 5 }}>
           <b style={{ color: "var(--chalk)" }}>Replacement level.</b> In a {lg.settings.teams}-team league the drop-off after {winner.name}
-          {" "}at {winner.pos} is {winner.pos === "RB" || winner.pos === "TE" ? "steep — the next tier is a real downgrade" : "gentle, so similar production is available later"}.
+          {" "}at {winner.pos} is {winner.pos === "RB" || winner.pos === "TE" ? "steep, and the next tier is a real downgrade" : "gentle, so similar production is available later"}.
         </div>
         <div className="mini" style={{ marginBottom: 5 }}>
           <b style={{ color: "var(--chalk)" }}>Cost.</b> {a.name} goes around pick {a.adp}, {b.name} around {b.adp}.
@@ -2843,7 +2843,7 @@ function Versus({ lg }) {
         </div>
         <div className="mini" style={{ marginBottom: 5 }}>
           <b style={{ color: "var(--chalk)" }}>Range of outcomes.</b> {sa.upside > sb.upside ? a.name : b.name} is the more volatile
-          of the two — higher ceiling, lower floor. {Math.abs(sa.upside - sb.upside) < 0.04 ? "Though the gap is small." : ""}
+          of the two, with a higher ceiling and a lower floor. {Math.abs(sa.upside - sb.upside) < 0.04 ? "Though the gap is small." : ""}
         </div>
         {(sa.byeClash > 1 || sb.byeClash > 1) && (
           <div className="mini">
@@ -2909,10 +2909,10 @@ function GMChat({ lg }) {
       `My roster: ${roster}.`;
     try {
       const t = await askClaude(`${ctx}\n\nQuestion: ${question}`,
-        "You are the user's fantasy football co-GM for the 2026 NFL season. Be specific, decisive, and brief — 4 sentences max unless asked for depth. Reference their actual roster. Skip disclaimers.", 700);
+        "You are a sharp fantasy football analyst helping with the 2026 NFL season. Be specific, decisive and brief: 4 sentences max unless asked for depth. Reference their actual roster. Skip disclaimers. Do not use em dashes.", 700);
       setMsgs((m) => [...m, { role: "gm", text: t }]);
     } catch {
-      setMsgs((m) => [...m, { role: "gm", text: "Couldn't reach the analyst. Try again." }]);
+      setMsgs((m) => [...m, { role: "gm", text: "No connection right now. Try again in a moment." }]);
     }
     setBusy(false);
   };
@@ -2920,12 +2920,12 @@ function GMChat({ lg }) {
   return (
     <>
       <div className="card">
-        <div className="eyebrow">Co-GM</div>
-        <div className="mini" style={{ marginTop: 6 }}>Knows your roster, your scoring, and where you sit in the standings. Ask start/sit, buy-low, or draft strategy.</div>
+        <div className="eyebrow">Second opinion</div>
+        <div className="mini" style={{ marginTop: 6 }}>Knows your roster, your scoring, and where you sit in the standings. Ask start/sit, buy low, or draft strategy.</div>
       </div>
       {msgs.map((m, i) => (
         <div key={i} className="card" style={{ borderColor: m.role === "user" ? "var(--line)" : "var(--first)", background: m.role === "user" ? "var(--panel2)" : "var(--panel)" }}>
-          <div className="eyebrow" style={{ marginBottom: 5 }}>{m.role === "user" ? "You" : "Co-GM"}</div>
+          <div className="eyebrow" style={{ marginBottom: 5 }}>{m.role === "user" ? "You" : "Answer"}</div>
           <div className="mini" style={{ color: "var(--chalk)", whiteSpace: "pre-wrap" }}>{m.text}</div>
         </div>
       ))}
@@ -2946,7 +2946,7 @@ function GMChat({ lg }) {
    with no mock league required. Saved separately from any league.
    ============================================================ */
 
-export const VERSION = "1.1.0";
+export const VERSION = "1.3.0";
 const MY_KEY = "huddle:myteam";
 
 const DEFAULT_MY = { ids: [], teams: 12, ppr: 1, superflex: false, name: "My Team", topPad: 0 };
@@ -3014,7 +3014,7 @@ function MyRoster({ my, save, toast, compact }) {
       {my.ids.length > 0 && (
         <div className="card tight">
           {sorted.map((id) => (
-            <PlayerRow key={id} p={BY_ID[id]} sub={`${BY_ID[id].team} · Bye ${BY_ID[id].bye || "—"} · ${values[id].ppg.toFixed(1)} ppg`}
+            <PlayerRow key={id} p={BY_ID[id]} sub={`${BY_ID[id].team} · Bye ${BY_ID[id].bye || "TBD"} · ${values[id].ppg.toFixed(1)} ppg`}
               right={<button className="chip" onClick={() => save({ ...my, ids: my.ids.filter((x) => x !== id) })}>Remove</button>} />
           ))}
         </div>
@@ -3043,7 +3043,7 @@ function TradeHelp({ my, save, toast }) {
       {mode === "calc" && <TradeCalc lg={lg} />}
       {mode === "find" && (my.ids.length > 2
         ? <RealTradeFinder my={my} />
-        : <div className="card"><div className="mini">Add your roster first — screenshot it or tap "My roster" to build it by hand.</div></div>)}
+        : <div className="card"><div className="mini">Add your roster first. Screenshot it, or tap "My roster" to build it by hand.</div></div>)}
       {mode === "roster" && <MyRoster my={my} save={save} toast={toast} />}
     </div>
   );
@@ -3074,7 +3074,7 @@ function RealTradeFinder({ my }) {
           points over replacement for a {my.teams}-team {my.ppr === 1 ? "PPR" : my.ppr === 0.5 ? "half-PPR" : "standard"} league.
         </div>
       </div>
-      {trades.length === 0 && <div className="card"><div className="mini">No clean fits — your roster is balanced enough that every deal costs about what it returns. Work the wire instead.</div></div>}
+      {trades.length === 0 && <div className="card"><div className="mini">No clean fits. Your roster is balanced enough that every deal costs about what it returns, so work the wire instead.</div></div>}
       {trades.map((t, i) => (
         <div key={i} className="card">
           <div className="row sp" style={{ marginBottom: 9 }}>
@@ -3106,7 +3106,7 @@ function DraftHelp({ my, save, toast }) {
   return (
     <div className="wrap">
       <div className="scroll-x" style={{ marginBottom: 12 }}>
-        {[["vs", "A over B"], ["radar", "Value radar"], ["gm", "Ask your GM"], ["roster", "My roster"]].map(([k, l]) => (
+        {[["vs", "A over B"], ["radar", "Value radar"], ["gm", "Second opinion"], ["roster", "My roster"]].map(([k, l]) => (
           <button key={k} className={`chip ${mode === k ? "on" : ""}`} onClick={() => setMode(k)}>{l}</button>
         ))}
       </div>
@@ -3185,7 +3185,7 @@ function Settings({ my, save, toast, onWipe }) {
         <h2 style={{ fontSize: 19, marginBottom: 6 }}>Top spacing</h2>
         <div className="mini" style={{ marginBottom: 10 }}>
           Phones report status-bar height differently, especially in installed web apps. If the header sits too close
-          to the clock — or too far from it — nudge it here.
+          to the clock, or too far from it, nudge it here.
         </div>
         <div className="grid2" style={{ gap: 7 }}>
           {[0, 10, 20, 34].map((n) => (
@@ -3201,8 +3201,8 @@ function Settings({ my, save, toast, onWipe }) {
       <div className="card">
         <h2 style={{ fontSize: 19, marginBottom: 9 }}>Save & restore</h2>
         <div className="mini" style={{ marginBottom: 11 }}>
-          Everything lives in this browser only. Export before you clear site data, switch phones, or reinstall —
-          the file holds your roster and every mock league.
+          Everything lives in this browser only. Export before you clear site data, switch phones, or reinstall.
+          The file holds your roster and every mock league.
         </div>
         <div className="grid2">
           <button className="btn alt" onClick={exportAll}>Download save</button>
@@ -3232,7 +3232,7 @@ function Settings({ my, save, toast, onWipe }) {
       <div className="card">
         <h2 style={{ fontSize: 19, marginBottom: 9 }}>About the numbers</h2>
         <div className="mini">
-          Projections are curve-derived from consensus ADP, not scraped expert projections — ranking order is
+          Projections are built from consensus ADP, not scraped expert projections. Ranking order is
           accurate, absolute point totals are estimates. Byes are the real 2026 schedule: six teams are off in
           Week 11, and nobody is off in Week 12.
         </div>
@@ -3247,9 +3247,9 @@ function Settings({ my, save, toast, onWipe }) {
 
 function Hub({ go, my }) {
   const tiles = [
-    { k: "mock", cls: "", h: "Mock Season", d: "Snake draft against seven personalities, then play all 17 weeks — injuries, waivers, playoffs.", go: "Draft now" },
+    { k: "mock", cls: "", h: "Mock Season", d: "Snake draft against seven personalities, then play all 17 weeks of injuries, waivers and playoffs.", go: "Draft now" },
     { k: "trade", cls: "b", h: "Trade Help", d: "Screenshot your roster, analyze any offer, and find deals both sides would actually take.", go: "Open" },
-    { k: "draft", cls: "g", h: "Draft Help", d: "Player A over player B with the reasoning, value radar, and a co-GM that knows your team.", go: "Open" },
+    { k: "draft", cls: "g", h: "Draft Help", d: "Player A over player B with the reasoning, a value radar, and answers about your own team.", go: "Open" },
     { k: "settings", cls: "m", h: "Settings", d: `Version ${VERSION} · save and restore your roster and leagues.`, go: "Open" },
   ];
   return (
