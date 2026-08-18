@@ -2,7 +2,29 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from "react"
 
 /* ============================================================
    HUDDLE, a 2026 fantasy football command center
-   Data: consensus PPR ADP (top 300) as of Aug 10 2026, real byes
+
+   Data: consensus PPR ADP (top 300) as of Aug 10 2026, real 2026 byes.
+   Projections are built from ADP, so ranking order is accurate while
+   absolute point totals are estimates.
+
+   MAP OF THIS FILE, top to bottom:
+
+     1. DATA          player pool, bye weeks, projection curves
+     2. SCORING       stat lines and custom scoring rules
+     3. LEAGUE        league creation, snake order, roster rules
+     4. CPU DRAFTING  roster rules plus tier and dropoff reasoning
+     5. SCHEDULE      generated NFL slate and defensive strength
+     6. VALUATION     rest-of-season value, replacement level, trades
+     7. SEASON        weekly simulation, injuries, waivers, playoffs
+     8. STORAGE       saves, the recovery mirror, the Claude helper
+     9. SHARED UI     sheets, player rows, the tappable player card
+    10. MOCK SCREENS  draft room, team, season, trades, tools
+    11. REAL SCREENS  trade help, draft help, roster, settings
+    12. APP SHELL     navigation and top level state
+
+   Two vocabularies appear throughout and mean different things:
+   "mock" is the simulated league, "real" is the roster the person
+   actually owns in their own league.
    ============================================================ */
 
 const BYE = {
@@ -365,14 +387,118 @@ export const PLAYERS = (() => {
 
 export const BY_ID = Object.fromEntries(PLAYERS.map((p) => [p.id, p]));
 
-export function pprScale(pos, ppr) {
-  if (ppr >= 1) return 1;
-  const f = ppr === 0.5 ? { WR: 0.90, TE: 0.90, RB: 0.95 } : { WR: 0.80, TE: 0.80, RB: 0.90 };
-  return f[pos] ?? 1;
+/* ===== 2. SCORING =====
+   
+   Baselines are full-PPR season totals. To make custom scoring actually move
+   projections, each player is given an implied stat line: the split of where
+   his points come from, back-solved so that default PPR scoring reproduces his
+   baseline exactly. Change a rule and the projection moves the right way. */
+
+export const DEFAULT_SCORING = {
+  rec: 1,            // per reception
+  recYd: 0.1,        // per receiving yard
+  recTD: 6,
+  rushYd: 0.1,
+  rushTD: 6,
+  passYd: 0.04,
+  passTD: 4,
+  int: -2,
+  fumble: -2,
+  tePremium: 0,      // extra points per reception for tight ends only
+  bonus100: 0,       // per 100-yard rushing or receiving game
+  dstMult: 1,
+  kMult: 1,
+};
+
+// where a season's points come from, by position
+const SPLIT = {
+  QB:  { passYd: .46, passTD: .30, rushYd: .14, rushTD: .10 },
+  RB:  { rushYd: .44, rushTD: .21, rec: .13, recYd: .17, recTD: .05 },
+  WR:  { rec: .22, recYd: .48, recTD: .27, rushYd: .03 },
+  TE:  { rec: .26, recYd: .48, recTD: .26 },
+  K:   { kick: 1 },
+  DST: { def: 1 },
+};
+
+// back-solve the stat line that yields `base` under DEFAULT_SCORING
+export function statLine(p) {
+  if (p._stats) return p._stats;
+  const sp = SPLIT[p.pos] || SPLIT.WR;
+  const B = p.base;
+  const D = DEFAULT_SCORING;
+
+  // turnovers scale with volume and sit outside the positive split
+  const int_ = p.pos === "QB" ? Math.max(3, 11 * (B / 330)) : 0;
+  const fum = p.pos === "QB" ? 4 * (B / 330) : p.pos === "RB" ? 2.2 * (B / 300) : 1.1 * (B / 300);
+  // positive production has to cover the baseline AND the turnover cost, or
+  // default scoring would not reproduce the player's baseline
+  const penalty = int_ * Math.abs(D.int) + fum * Math.abs(D.fumble);
+  const T = B + penalty;
+
+  const st = {
+    rec: (T * (sp.rec || 0)) / D.rec,
+    recYd: (T * (sp.recYd || 0)) / D.recYd,
+    recTD: (T * (sp.recTD || 0)) / D.recTD,
+    rushYd: (T * (sp.rushYd || 0)) / D.rushYd,
+    rushTD: (T * (sp.rushTD || 0)) / D.rushTD,
+    passYd: (T * (sp.passYd || 0)) / D.passYd,
+    passTD: (T * (sp.passTD || 0)) / D.passTD,
+    kick: B * (sp.kick || 0),
+    def: B * (sp.def || 0),
+    int: int_,
+    fumble: fum,
+  };
+  // roughly how many 100-yard rushing or receiving games this player has
+  const yds = st.rushYd + st.recYd;
+  st.games100 = Math.max(0, Math.min(15, (yds - 700) / 78));
+  p._stats = st;
+  return st;
 }
-export function proj(p, ppr = 1) {
-  return p.base * pprScale(p.pos, ppr);
+
+export function resolveScoring(x) {
+  if (x && typeof x === "object") return { ...DEFAULT_SCORING, ...x };
+  // legacy: a bare number is the old ppr setting
+  const ppr = typeof x === "number" ? x : 1;
+  return { ...DEFAULT_SCORING, rec: ppr };
 }
+
+export function projectPoints(p, scoring) {
+  const sc = resolveScoring(scoring);
+  const st = statLine(p);
+  if (p.pos === "K") return st.kick * sc.kMult;
+  if (p.pos === "DST") return st.def * sc.dstMult;
+  const recPts = st.rec * (sc.rec + (p.pos === "TE" ? sc.tePremium : 0));
+  return Math.max(0,
+    recPts +
+    st.recYd * sc.recYd +
+    st.recTD * sc.recTD +
+    st.rushYd * sc.rushYd +
+    st.rushTD * sc.rushTD +
+    st.passYd * sc.passYd +
+    st.passTD * sc.passTD +
+    st.int * sc.int +
+    st.fumble * sc.fumble +
+    st.games100 * sc.bonus100
+  );
+}
+
+export function proj(p, scoring = 1) {
+  return projectPoints(p, scoring);
+}
+
+// what a league actually scores with, tolerating older saves
+export function scoringOf(lg) {
+  return resolveScoring(lg?.settings?.scoring ?? lg?.settings?.ppr ?? 1);
+}
+
+export const SCORING_PRESETS = [
+  { key: "ppr", label: "Full PPR", patch: { rec: 1, tePremium: 0, passTD: 4 } },
+  { key: "half", label: "Half PPR", patch: { rec: 0.5, tePremium: 0, passTD: 4 } },
+  { key: "std", label: "Standard", patch: { rec: 0, tePremium: 0, passTD: 4 } },
+  { key: "tep", label: "TE Premium", patch: { rec: 1, tePremium: 0.5, passTD: 4 } },
+  { key: "six", label: "6pt Pass TD", patch: { rec: 1, tePremium: 0, passTD: 6 } },
+  { key: "bonus", label: "Yardage Bonus", patch: { rec: 1, bonus100: 3 } },
+];
 
 export const LINEUP_STD = [
   { slot: "QB", accepts: ["QB"] },
@@ -457,7 +583,7 @@ export function makeLeague(cfg) {
     id: uid(),
     name: cfg.name || `${teams}-Team Mock`,
     createdAt: Date.now(),
-    settings: { teams, rounds, ppr, superflex, userSlot, faab: cfg.faabBudget ?? 100, waiverMode: cfg.waiverMode || "faab" },
+    settings: { teams, rounds, ppr, scoring: resolveScoring(cfg.scoring ?? ppr), superflex, userSlot, faab: cfg.faabBudget ?? 100, waiverMode: cfg.waiverMode || "faab" },
     gms,
     order,
     picks: [],
@@ -478,7 +604,8 @@ function rosterCounts(ids) {
   return c;
 }
 
-/* ---- CPU drafting: hard roster rules plus tier and dropoff reasoning ----
+/* ===== 4. CPU DRAFTING =====
+   Hard roster rules plus tier and dropoff reasoning.
    These GMs draft the way a good league drafts: starters before backups,
    never a kicker in round 9, never a third QB, and they weigh how much
    value actually falls off before their next turn instead of just ADP. */
@@ -506,7 +633,8 @@ function picksUntilNext(lg, gmIdx) {
 export function aiPick(lg, gmIdx, available) {
   const g = lg.gms[gmIdx];
   const P = PERSONAS.find((p) => p.key === g.persona) || PERSONAS[0];
-  const { rounds, superflex, ppr, teams } = lg.settings;
+  const { rounds, superflex, teams } = lg.settings;
+  const ppr = scoringOf(lg);   // full scoring object, not the legacy number
   const round = roundOf(lg, lg.picks.length);
   const ids = lg.rosters[gmIdx];
   const counts = rosterCounts(ids);
@@ -526,7 +654,10 @@ export function aiPick(lg, gmIdx, available) {
     if (p.pos === "K" || p.pos === "DST") return left <= 2;      // last two rounds only
     if (left <= mustFill) return false;                           // must save slots for K/DST
     if (p.pos === "QB") {
-      if (!superflex && round <= 2) return false;                 // no round 1-2 QB in 1QB
+      // no early QB in 1QB leagues, but six-point passing touchdowns genuinely
+      // move quarterbacks up, so the rule loosens when the scoring says so
+      const qbHeavy = ppr.passTD >= 6 || ppr.passYd >= 0.05;
+      if (!superflex && round <= (qbHeavy ? 1 : 2)) return false;
       if (!superflex && counts.QB >= 1) {
         if (!g.traits?.qb2) return false;                          // not every GM carries a QB2
         if (round < rounds - 3) return false;
@@ -554,19 +685,39 @@ export function aiPick(lg, gmIdx, available) {
   }
 
   // --- best available at each position, now vs. likely at next turn ---
-  const bestNow = {}, bestNext = {};
+  /* Real ADP has spread. Treating "will he last until my next pick" as a hard
+     cutoff makes the CPU reach for players who would obviously have fallen.
+     Instead, give each player a survival probability and take the expected
+     value of the best man still on the board next turn. */
+  const nextPick = overall + gap;
+  const survive = (p) => {
+    if (gap > 200) return 1;
+    const sd = Math.max(6, 0.42 * Math.sqrt(p.adp) * 3.2);   // spread widens later
+    const z = (p.adp - nextPick) / sd;
+    // logistic approximation of the normal CDF
+    return 1 / (1 + Math.exp(-1.702 * z));
+  };
+
+  const bestNow = {}, expectedNext = {};
   for (const pos of POS_ORDER) {
     const at = available.filter((p) => p.pos === pos);
     bestNow[pos] = at[0];
-    // a player survives the gap if his ADP is comfortably past our next pick
-    bestNext[pos] = at.find((p) => p.adp > overall + gap * 0.9) || at[at.length - 1];
+    let acc = 0, goneProb = 1;
+    for (const cand of at.slice(0, 14)) {
+      const ps = survive(cand);
+      acc += proj(cand, ppr) * ps * goneProb;   // he is there AND everyone better is gone
+      goneProb *= (1 - ps);
+      if (goneProb < 0.02) break;
+    }
+    const tail = at[Math.min(at.length - 1, 14)];
+    expectedNext[pos] = acc + (tail ? proj(tail, ppr) * goneProb : 0);
   }
 
   let best = null, bestScore = -Infinity;
   for (const p of pool.slice(0, 45)) {
     const pts = proj(p, ppr);
     // 1. how much value evaporates at this position if we wait one turn
-    const fallback = bestNext[p.pos] ? proj(bestNext[p.pos], ppr) : pts * 0.75;
+    const fallback = expectedNext[p.pos] || pts * 0.75;
     const dropoff = Math.max(0, pts - fallback);
     // 2. tier break: real gap to the next man at the position
     const same = available.filter((x) => x.pos === p.pos);
@@ -604,11 +755,124 @@ export function makePick(lg, playerId) {
   return lg;
 }
 
-/* ---------------- valuation ---------------- */
+/* ===== 5. SCHEDULE =====
+   
+   The mock season simulates its own NFL slate. Byes are the real 2026 ones,
+   and pairings are generated so every team plays a non-bye opponent each week,
+   weighted toward division rivals the way a real schedule is. */
+
+const DIVISIONS = {
+  AFCE: ["BUF", "MIA", "NE", "NYJ"], AFCN: ["BAL", "CIN", "CLE", "PIT"],
+  AFCS: ["HOU", "IND", "JAX", "TEN"], AFCW: ["DEN", "KC", "LV", "LAC"],
+  NFCE: ["DAL", "NYG", "PHI", "WAS"], NFCN: ["CHI", "DET", "GB", "MIN"],
+  NFCS: ["ATL", "CAR", "NO", "TB"], NFCW: ["ARI", "LAR", "SF", "SEA"],
+};
+const TEAMS32 = Object.values(DIVISIONS).flat();
+const DIV_OF = {};
+for (const [d, ts] of Object.entries(DIVISIONS)) ts.forEach((t) => { DIV_OF[t] = d; });
+
+// Defensive strength comes straight from the D/ST projections already in the pool,
+// so a team with a top-5 fantasy defense actually suppresses opposing scorers.
+export const DEF_RATING = (() => {
+  const dst = PLAYERS.filter((p) => p.pos === "DST");
+  const vals = dst.map((p) => p.base);
+  const hi = Math.max(...vals), lo = Math.min(...vals);
+  const r = {};
+  // Not every team has a D/ST inside the top 300, so unknown teams sit at league
+  // average rather than being treated as the worst defense in football.
+  TEAMS32.forEach((t) => { r[t] = 0.5; });
+  dst.forEach((p) => {
+    const norm = hi === lo ? 0.5 : (p.base - lo) / (hi - lo);   // 1 = best defense
+    r[p.team] = norm;
+  });
+  return r;
+})();
+
+// how much a defense moves an opposing skill player, roughly +/-9%
+export function matchupMult(oppTeam) {
+  const d = DEF_RATING[oppTeam];
+  if (d == null) return 1;
+  return 1 + (0.5 - d) * 0.20;
+}
+
+export function buildNFLSchedule(seed) {
+  const rng = mulberry(seed * 31 + 17);
+  const weeks = [];
+  const played = {};                       // team -> { opp: lastWeekPlayed }
+  const meetings = {};                     // team -> { opp: timesPlayed }
+  TEAMS32.forEach((t) => { played[t] = {}; meetings[t] = {}; });
+
+  for (let w = 1; w <= 18; w++) {
+    const active = TEAMS32.filter((t) => BYE[t] !== w);
+    const pool = active.slice().sort(() => rng() - 0.5);
+    const used = new Set();
+    const pairs = [];
+
+    for (const t of pool) {
+      if (used.has(t)) continue;
+      const free = pool.filter((x) => x !== t && !used.has(x));
+      if (!free.length) continue;
+
+      // score each candidate: division rivals are good, quick rematches are not
+      const scored = free.map((x) => {
+        const last = played[t][x];
+        const recent = last != null ? w - last : 99;
+        const met = meetings[t][x] || 0;
+        let sc = rng() * 2;
+        if (DIV_OF[x] === DIV_OF[t]) sc += 1.6;          // rivalries recur
+        if (recent < 6) sc -= 6 - recent;                 // no fast rematch
+        if (met >= 1 && DIV_OF[x] !== DIV_OF[t]) sc -= 5; // non-rivals meet once
+        if (met >= 2) sc -= 14;                           // nobody plays three times
+        return { x, sc };
+      }).sort((a, b) => b.sc - a.sc);
+
+      const pick = scored[0].x;
+      used.add(t); used.add(pick);
+      played[t][pick] = w; played[pick][t] = w;
+      meetings[t][pick] = (meetings[t][pick] || 0) + 1;
+      meetings[pick][t] = (meetings[pick][t] || 0) + 1;
+      pairs.push([t, pick]);
+    }
+
+    const map = {};
+    pairs.forEach(([a, b]) => { map[a] = b; map[b] = a; });
+    weeks.push(map);
+  }
+  return weeks;
+}
+
+/* Seasons saved before the schedule existed have no nfl field. Rather than
+   showing "no game" forever, rebuild it on demand from the season seed, which
+   is deterministic and so reproduces the same slate every time. */
+const _schedCache = {};
+export function nflSchedule(state) {
+  if (state?.nfl?.length) return state.nfl;
+  const seed = state?.seed ?? 1;
+  if (!_schedCache[seed]) _schedCache[seed] = buildNFLSchedule(seed);
+  return _schedCache[seed];
+}
+
+export function oppFor(state, team, week) {
+  if (!state || !team || team === "FA") return null;
+  const sched = nflSchedule(state);
+  const m = sched[week - 1];
+  return m ? (m[team] || null) : null;
+}
+
+// write the schedule back into an older save so it persists from now on
+export function ensureSchedule(lg) {
+  if (lg?.season && !lg.season.nfl?.length) {
+    lg.season.nfl = buildNFLSchedule(lg.season.seed ?? 1);
+    return true;
+  }
+  return false;
+}
+
+/* ===== 6. VALUATION ===== */
 
 // remaining-season points estimate for every player, given season state
 export function buildValues(lg, state) {
-  const ppr = lg.settings.ppr;
+  const ppr = scoringOf(lg);
   const weeksLeft = state ? Math.max(0, 18 - state.week) : 17;
   const out = {};
   for (const p of PLAYERS) {
@@ -625,9 +889,23 @@ export function buildValues(lg, state) {
     }
     const inj = state ? (state.injuries[p.id] || 0) : 0;
     const playable = Math.max(0, weeksLeft - Math.min(weeksLeft, inj) - (state && p.bye >= state.week ? 1 : 0));
+    // Championship weeks are worth more than October weeks. Weight each remaining
+    // week by whether it is a playoff week, and skip weeks the player misses.
+    let weighted = 0;
+    if (state) {
+      const first = state.week + Math.min(weeksLeft, inj);
+      for (let w = first; w <= 17; w++) {
+        if (p.bye === w) continue;
+        weighted += w >= state.shape.rsWeeks + 1 ? 1.75 : 1;
+      }
+    } else {
+      weighted = 17 * 1.05;
+    }
     out[p.id] = {
       ppg: perWeek * mult,
       ros: perWeek * mult * playable,
+      rosWeighted: perWeek * mult * weighted,
+      weeksCounted: weighted,
       mult,
       out: inj,
     };
@@ -645,13 +923,45 @@ export function buildValues(lg, state) {
   for (const p of PLAYERS) {
     const v = out[p.id];
     const vorpPPG = Math.max(0.15, v.ppg - repl[p.pos]);
-    const horizon = state ? Math.max(1, weeksLeft) : 17;
+    // horizon is now playoff-weighted, so an injury through week 16 costs far more
+    // than the same number of missed weeks in September
+    const horizon = Math.max(1, v.weeksCounted);
     v.vorp = vorpPPG * horizon;
     // superlinear: one stud > two mid guys, because you start finite lineups
-    v.tv = Math.round(Math.pow(v.vorp, 1.22) / 3.6 * 10) / 10;
+    v.tv = Math.round(Math.pow(v.vorp, 1.22) / 3.9 * 10) / 10;
   }
   out.__repl = repl;
   return out;
+}
+
+// Points a lineup actually scores per week, given who is on the roster.
+export function lineupPPG(lg, ids, values) {
+  const slots = lineupFor(lg.settings);
+  const sorted = ids.slice().sort((a, b) => (values[b]?.ppg || 0) - (values[a]?.ppg || 0));
+  const used = new Set();
+  let total = 0;
+  for (const s of slots) {
+    const pick = sorted.find((id) => !used.has(id) && s.accepts.includes(BY_ID[id].pos));
+    if (pick) { used.add(pick); total += values[pick].ppg; }
+  }
+  return total;
+}
+
+/* Marginal value: what a player is worth to THIS roster, not in the abstract.
+   A WR5 on a receiver-rich team adds almost nothing to your weekly score even
+   though his market value is high. This is the number that should drive
+   depth-for-stud trades, and it is why most trade calculators feel wrong. */
+export function marginalPPG(lg, ids, playerId, values) {
+  const without = lineupPPG(lg, ids.filter((x) => x !== playerId), values);
+  const with_ = lineupPPG(lg, [...ids.filter((x) => x !== playerId), playerId], values);
+  return Math.max(0, with_ - without);
+}
+
+// Net weekly change from a proposed swap, from one side's point of view.
+export function swapImpact(lg, ids, outIds, inIds, values) {
+  const before = lineupPPG(lg, ids, values);
+  const after = lineupPPG(lg, ids.filter((x) => !outIds.includes(x)).concat(inIds), values);
+  return Math.round((after - before) * 10) / 10;
 }
 
 export function tradeVerdict(sideA, sideB, values) {
@@ -671,7 +981,7 @@ export function tradeVerdict(sideA, sideB, values) {
   return { a: Math.round(a * 10) / 10, b: Math.round(b * 10) / 10, pct, verdict };
 }
 
-/* ---------------- season ---------------- */
+/* ===== 7. SEASON ===== */
 
 export function playoffShape(teams) {
   return teams >= 10
@@ -708,6 +1018,7 @@ export function startSeason(lg, seed = Date.now()) {
   return {
     seed,
     week: 1,
+    nfl: buildNFLSchedule(seed),
     shape,
     talent,
     injuries: {},
@@ -744,17 +1055,42 @@ export function optimalLineup(lg, state, ids, week, values) {
 function scorePlayer(p, state, week, rng) {
   if (p.bye === week) return { pts: 0, tag: "BYE" };
   if (state.injuries[p.id] > 0) return { pts: 0, tag: "OUT" };
-  const mean = (p.base / 17) * state.talent[p.id];
+  const opp = oppFor(state, p.team, week);
+  // defenses matter: a skill player faces roughly a 9% swing either way,
+  // and a D/ST gets the inverse read on the offense it is facing
+  const mm = p.pos === "DST" ? (opp ? 2 - matchupMult(opp) : 1) : (opp ? matchupMult(opp) : 1);
+  const mean = (p.base / 17) * state.talent[p.id] * mm;
   const z = gauss(rng);
   const pts = Math.max(0, mean * (1 + z * p.vol) + (p.pos === "DST" ? gauss(rng) * 1.5 : 0));
-  return { pts: Math.round(pts * 10) / 10, tag: null };
+  return { pts: Math.round(pts * 10) / 10, tag: null, opp };
+}
+
+/* Weekly outlook shown in the preview: the visible estimate for a player this
+   week, adjusted for opponent, with a realistic floor and ceiling band. */
+export function weekOutlook(p, state, week, values) {
+  const base = values[p.id]?.ppg ?? p.base / 17;
+  if (p.bye === week) return { status: "BYE", mean: 0, low: 0, high: 0, opp: null, mm: 1 };
+  if (state?.injuries?.[p.id] > 0) return { status: "OUT", mean: 0, low: 0, high: 0, opp: null, mm: 1 };
+  const opp = oppFor(state, p.team, week);
+  const mm = p.pos === "DST" ? (opp ? 2 - matchupMult(opp) : 1) : (opp ? matchupMult(opp) : 1);
+  const mean = base * mm;
+  // ~80% of weeks land inside this band
+  const low = Math.max(0, mean * (1 - 0.95 * p.vol));
+  const high = mean * (1 + 1.15 * p.vol);
+  return {
+    status: null, opp, mm,
+    mean: Math.round(mean * 10) / 10,
+    low: Math.round(low * 10) / 10,
+    high: Math.round(high * 10) / 10,
+    grade: mm > 1.055 ? "great" : mm > 1.02 ? "good" : mm < 0.945 ? "tough" : mm < 0.98 ? "hard" : "even",
+  };
 }
 
 export function simWeek(lg, state, userLineup) {
   const rng = mulberry(state.seed * 7919 + state.week * 104729);
   const week = state.week;
   const values = buildValues(lg, state);
-  const ppr = lg.settings.ppr;
+  const ppr = scoringOf(lg);
 
   // tick injuries down, then roll new ones
   const inj = { ...state.injuries };
@@ -817,7 +1153,13 @@ export function simWeek(lg, state, userLineup) {
     const s = scores[p.id];
     if (s.tag) continue;
     const prev = actual[p.id] || { pts: 0, gp: 0, log: [] };
-    actual[p.id] = { pts: prev.pts + s.pts, gp: prev.gp + 1, log: [...prev.log, s.pts].slice(-17) };
+    // keep the week number with each score so the game log lines up correctly
+    // after byes and missed weeks
+    actual[p.id] = {
+      pts: prev.pts + s.pts,
+      gp: prev.gp + 1,
+      log: [...prev.log, { w: week, pts: s.pts, opp: s.opp || null }].slice(-18),
+    };
   }
 
   return { scores, matchups, lineups, record, actual, injuries: inj, newInjuries, week };
@@ -836,7 +1178,7 @@ export function waiverBoard(lg, state, limit = 40) {
 function hotness(state, id) {
   const a = state.actual[id];
   if (!a || !a.log.length) return 0;
-  const last = a.log.slice(-2);
+  const last = a.log.slice(-2).map((x) => (typeof x === "number" ? x : x.pts));
   const avg = last.reduce((s, x) => s + x, 0) / last.length;
   const base = BY_ID[id].base / 17;
   return Math.max(0, avg - base * 1.1);
@@ -967,20 +1309,15 @@ export function evaluateOffer(lg, state, partnerIdx, iSend, iGet) {
   const incomingHelps = iSend.some((id) => BY_ID[id].pos === theirNeed);
   const theirRoster = lg.rosters[partnerIdx];
 
-  // do the players they'd receive actually crack their lineup?
-  const upgrade = iSend.reduce((best, id) => {
-    const p = BY_ID[id];
-    const atPos = theirRoster.filter((x) => BY_ID[x].pos === p.pos)
-      .map((x) => values[x].ppg).sort((a, b) => b - a);
-    const startersAt = p.pos === "RB" || p.pos === "WR" ? 2 : 1;
-    const bar = atPos[startersAt] ?? 0;
-    return Math.max(best, values[id].ppg - bar);
-  }, 0);
+  // Do the players they would receive actually crack their lineup? This is the
+  // real test, and it is why a WR-rich team turns down a good WR.
+  const upgrade = swapImpact(lg, theirRoster, iGet, iSend, values);
 
   // v.pct > 0 means the user is sending more value than receiving
   let score = v.pct;
-  if (incomingHelps) score += 7;
-  score += Math.min(7, upgrade * 1.0);
+  if (incomingHelps) score += 6;
+  score += Math.max(-14, Math.min(11, upgrade * 2.2));
+  if (upgrade < -0.5) score -= 6;   // they will not weaken their own starters
   if (iGet.length > iSend.length) score -= 6;        // they dislike losing depth for one piece
   if (theirRoster.length - iGet.length + iSend.length < 13) score -= 14;
 
@@ -1003,21 +1340,10 @@ export function evaluateOffer(lg, state, partnerIdx, iSend, iGet) {
   return { accept, close, reply, verdict: v, theirNeed, score };
 }
 
+// Which spot on a roster is furthest below a startable baseline.
+// Both the CPU and the trade finder use this, so it lives in one place.
 export function weakestPos(lg, gmIdx, values) {
-  const roster = lg.rosters[gmIdx].map((id) => BY_ID[id]);
-  const strength = {};
-  for (const pos of ["QB", "RB", "WR", "TE"]) {
-    const at = roster.filter((p) => p.pos === pos).map((p) => values[p.id].ppg).sort((a, b) => b - a);
-    const need = pos === "RB" || pos === "WR" ? 3 : 1;
-    strength[pos] = at.slice(0, need).reduce((s, x) => s + x, 0) / need || 0;
-  }
-  const bench = { QB: 15, RB: 11, WR: 11, TE: 8 };
-  let worst = "RB", worstGap = -99;
-  for (const pos of Object.keys(strength)) {
-    const gap = bench[pos] - strength[pos];
-    if (gap > worstGap) { worstGap = gap; worst = pos; }
-  }
-  return worst;
+  return weakestPosFromIds(lg.rosters[gmIdx], values);
 }
 
 export function standings(lg, state) {
@@ -1076,13 +1402,21 @@ const CSS = `
   background:rgba(10,14,19,.98);backdrop-filter:blur(14px);border-top:1px solid var(--line);
   padding:8px 8px calc(8px + var(--safe-bot))}
 .navpad{height:calc(78px + var(--safe-bot))}
-.subnav{position:sticky;top:0;z-index:25;display:flex;gap:6px;overflow-x:auto;padding:9px 14px;
-  background:rgba(12,17,22,.96);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
-.subnav::-webkit-scrollbar{display:none}
-.snb{padding:7px 12px;border-radius:99px;background:var(--panel2);border:1px solid var(--line);white-space:nowrap;
-  font-size:12px;font-weight:700;color:var(--mute);font-family:'Barlow Condensed',sans-serif;
-  text-transform:uppercase;letter-spacing:.05em;position:relative}
-.snb.on{background:var(--first);color:#101519;border-color:var(--first)}
+/* primary nav inside a mock league: one evenly spaced segmented control,
+   no horizontal scrolling, so the five sections never shift position */
+.subnav{position:sticky;top:0;z-index:25;display:grid;grid-template-columns:repeat(5,1fr);gap:3px;
+  padding:8px 10px;background:rgba(12,17,22,.97);backdrop-filter:blur(8px);
+  border-bottom:1px solid var(--line)}
+.snb{padding:8px 2px;border-radius:8px;background:transparent;border:none;white-space:nowrap;
+  font-size:11.5px;font-weight:700;color:var(--mute);font-family:'Barlow Condensed',sans-serif;
+  text-transform:uppercase;letter-spacing:.06em;position:relative;text-align:center}
+.snb.on{background:var(--first);color:#101519}
+/* secondary nav within the season screen */
+.segs{display:grid;grid-auto-flow:column;gap:3px;background:var(--panel2);border:1px solid var(--line);
+  border-radius:10px;padding:3px;margin-bottom:12px}
+.seg{padding:8px 2px;border-radius:7px;font-size:11px;font-weight:700;color:var(--mute);text-align:center;
+  font-family:'Barlow Condensed',sans-serif;text-transform:uppercase;letter-spacing:.05em;position:relative}
+.seg.on{background:var(--first);color:#101519}
 .tab{padding:9px 2px 8px;text-align:center;font-size:11px;letter-spacing:.05em;text-transform:uppercase;
   color:var(--mute);font-weight:700;border-radius:10px;display:flex;flex-direction:column;align-items:center;gap:4px;
   font-family:'Barlow Condensed',sans-serif;line-height:1}
@@ -1090,8 +1424,11 @@ const CSS = `
 .tab .dot::after{content:'';position:absolute;inset:5px;border-radius:2px;background:var(--mute)}
 .tab.on{color:#101519;background:var(--first)}
 .tab.on .dot{background:rgba(16,21,25,.22)} .tab.on .dot::after{background:#101519}
-.tab .badge{position:absolute;top:-4px;right:-6px;min-width:16px;height:16px;border-radius:99px;background:var(--red);
+.badge{position:absolute;top:-4px;right:-6px;min-width:16px;height:16px;border-radius:99px;background:var(--red);
   color:#fff;font-size:9.5px;font-weight:700;display:grid;place-items:center;padding:0 4px;font-family:Inter,sans-serif}
+/* in the tight segmented controls a number is noise, so show a dot instead */
+.snb .badge,.seg .badge{top:5px;right:6px;min-width:6px;width:6px;height:6px;padding:0;font-size:0;overflow:hidden}
+.snb.on .badge,.seg.on .badge{background:#101519}
 .wrap{padding:14px 14px 24px;max-width:760px;margin:0 auto}
 .wrap.top{padding-top:calc(14px + var(--safe-top) + var(--nudge))}
 /* status-bar-style:black makes iOS reserve the bar, so insets stay small here.
@@ -1133,14 +1470,23 @@ const CSS = `
 .act.b .ico{color:var(--los)} .act.g .ico{color:var(--green)} .act.r .ico{color:var(--red)}
 .act h4{font-family:'Barlow Condensed',sans-serif;font-size:18px;text-transform:uppercase;margin:0 0 2px;letter-spacing:.02em}
 .act .arw{color:var(--mute);font-size:20px;flex:none}
+.rng{width:78px;flex:none;text-align:right}
+.rngbar{height:4px;background:var(--panel2);border-radius:99px;position:relative;margin:4px 0 3px;overflow:hidden}
+.rngbar>i{position:absolute;top:0;bottom:0;background:var(--first);border-radius:99px;opacity:.55}
+.rngbar>b{position:absolute;top:-2px;width:2px;height:8px;background:var(--chalk);border-radius:1px}
+.opp{font-size:10.5px;font-weight:700;letter-spacing:.03em}
+.o-great{color:var(--green)} .o-good{color:#8FD8B4} .o-even{color:var(--mute)}
+.o-hard{color:#E9A03A} .o-tough{color:var(--red)}
 .pill{display:inline-block;padding:2px 7px;border-radius:99px;background:var(--first);color:#101519;
   font-size:10px;font-weight:700;margin-left:6px}
 .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
 .stat{background:var(--panel2);border-radius:8px;padding:9px;text-align:center}
 .stat b{display:block;font-family:'Barlow Condensed',sans-serif;font-size:24px;line-height:1;margin-bottom:3px}
-.sheet{position:fixed;inset:0;z-index:60;background:rgba(6,9,12,.7);display:flex;align-items:flex-end}
+.sheet{position:fixed;inset:0;z-index:60;background:rgba(6,9,12,.7);display:flex;align-items:flex-end;
+  transition:padding-bottom .18s ease-out}
 .sheet>div{background:var(--panel);width:100%;max-height:88vh;overflow-y:auto;border-radius:14px 14px 0 0;
-  border-top:3px solid var(--first);padding:14px}
+  border-top:3px solid var(--first);padding:14px;-webkit-overflow-scrolling:touch;
+  transition:max-height .18s ease-out}
 .tag{font-size:9.5px;font-weight:700;letter-spacing:.08em;padding:2px 5px;border-radius:3px;text-transform:uppercase}
 .t-out{background:rgba(226,72,58,.16);color:var(--red)}
 .t-bye{background:rgba(139,155,168,.16);color:var(--mute)}
@@ -1148,7 +1494,6 @@ const CSS = `
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(80px + var(--safe-bot));z-index:80;background:var(--first);
   color:#101519;font-weight:700;padding:10px 16px;border-radius:99px;font-size:13px;max-width:90%}
 .mini{font-size:11.5px;color:var(--mute);line-height:1.5}
-.link{color:var(--first);font-weight:600;text-decoration:underline;text-underline-offset:2px}
 .hub{display:grid;grid-template-columns:1fr 1fr;gap:11px}
 .tile{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:15px 13px 14px;
   text-align:left;min-height:152px;display:flex;flex-direction:column;position:relative;overflow:hidden}
@@ -1169,11 +1514,39 @@ function Toast({ msg }) {
   return <div className="toast pop">{msg}</div>;
 }
 
+/* How much of the window the on-screen keyboard is covering. iOS does not resize
+   the layout viewport when the keyboard opens, so anything anchored to the bottom
+   ends up underneath it. visualViewport tells us the real overlap. */
+export function useKeyboardInset() {
+  const [inset, setInset] = useState(0);
+  useEffect(() => {
+    const vv = typeof window !== "undefined" ? window.visualViewport : null;
+    if (!vv) return;
+    const onChange = () => {
+      const overlap = Math.max(0, window.innerHeight - (vv.height + vv.offsetTop));
+      setInset(overlap > 90 ? Math.round(overlap) : 0);
+    };
+    onChange();
+    vv.addEventListener("resize", onChange);
+    vv.addEventListener("scroll", onChange);
+    return () => { vv.removeEventListener("resize", onChange); vv.removeEventListener("scroll", onChange); };
+  }, []);
+  return inset;
+}
+
 function Sheet({ open, onClose, title, children }) {
+  const kb = useKeyboardInset();
   if (!open) return null;
   return (
-    <div className="sheet" onClick={onClose}>
-      <div onClick={(e) => e.stopPropagation()}>
+    <div className="sheet" onClick={onClose} style={{ paddingBottom: kb }}>
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          // shrink with the keyboard so the list is always reachable
+          maxHeight: kb ? `calc(100vh - ${kb + 70}px)` : "88vh",
+          paddingBottom: kb ? 16 : 14,
+        }}
+      >
         <div className="row sp" style={{ marginBottom: 10 }}>
           <h2 style={{ fontSize: 20 }}>{title}</h2>
           <button className="chip" onClick={onClose}>Close</button>
@@ -1190,7 +1563,7 @@ function PlayerRow({ p, right, onClick, tag, sub }) {
       <div className={POSC(p.pos)}>{p.pos === "DST" ? "DEF" : p.pos}</div>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div className="nm" style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-          {p.name} {tag && <span className={`tag ${tag.c}`} style={{ marginLeft: 4 }}>{tag.t}</span>}
+          <Tap id={p.id}>{p.name}</Tap> {tag && <span className={`tag ${tag.c}`} style={{ marginLeft: 4 }}>{tag.t}</span>}
         </div>
         <div className="sub">{sub ?? `${p.team} · Bye ${p.bye || "TBD"} · ADP ${p.adp}`}</div>
       </div>
@@ -1199,7 +1572,7 @@ function PlayerRow({ p, right, onClick, tag, sub }) {
   );
 }
 
-/* ---------------- storage ---------------- */
+/* ===== 8. STORAGE ===== */
 
 const store = {
   async get(k) { try { const r = await window.storage.get(k); return r ? JSON.parse(r.value) : null; } catch { return null; } },
@@ -1354,7 +1727,9 @@ async function saveLeague(lg) {
   recoverySet(RECOVERY_INDEX, next);
 }
 
-/* ---------------- Claude helper ---------------- */
+/* ===== 8b. CLAUDE HELPER =====
+   Only the screenshot reader and the question box use this. Everything
+   else in the app runs with no network at all. */
 
 async function askClaude(content, system, maxTokens = 1200) {
   const body = {
@@ -1380,7 +1755,7 @@ function parseJSON(txt) {
    HOME
    ============================================================ */
 
-function MockHome({ onOpen, onCreate }) {
+function MockHome({ onOpen, onCreate, customScoring }) {
   const [saved, setSaved] = useState([]);
   const [cfg, setCfg] = useState({
     teams: 12, rounds: 15, ppr: 1, superflex: false, userSlot: 5, teamName: "My Team", name: "",
@@ -1461,10 +1836,15 @@ function MockHome({ onOpen, onCreate }) {
           </div>
           <div>
             <div className="eyebrow" style={{ marginBottom: 4 }}>Scoring</div>
-            <select value={cfg.ppr} onChange={(e) => setCfg({ ...cfg, ppr: +e.target.value })}>
-              <option value={1}>Full PPR</option>
-              <option value={0.5}>Half PPR</option>
-              <option value={0}>Standard</option>
+            <select value={cfg.scoringKey ?? "ppr"} onChange={(e) => {
+              const k = e.target.value;
+              if (k === "custom") { setCfg({ ...cfg, scoringKey: k, scoring: resolveScoring(customScoring), ppr: resolveScoring(customScoring).rec }); return; }
+              const pre = SCORING_PRESETS.find((x) => x.key === k) || SCORING_PRESETS[0];
+              const sc = { ...DEFAULT_SCORING, ...pre.patch };
+              setCfg({ ...cfg, scoringKey: k, scoring: sc, ppr: sc.rec });
+            }}>
+              {SCORING_PRESETS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
+              <option value="custom">My custom rules</option>
             </select>
           </div>
           <div>
@@ -1523,6 +1903,7 @@ function MockHome({ onOpen, onCreate }) {
 function DraftRoom({ lg, setLg, toast }) {
   const [pos, setPos] = useState("ALL");
   const [q, setQ] = useState("");
+  const kb = useKeyboardInset();
   const [paused, setPaused] = useState(false);
   const [detail, setDetail] = useState(null);
   const [autopick, setAutopick] = useState(false);
@@ -1625,7 +2006,10 @@ function DraftRoom({ lg, setLg, toast }) {
       )}
 
       <div className="row" style={{ marginBottom: 9, gap: 7 }}>
-        <input placeholder="Search player or team" value={q} onChange={(e) => setQ(e.target.value)} />
+        <input placeholder="Search player or team" value={q} onChange={(e) => setQ(e.target.value)}
+          enterKeyHint="search"
+          onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }} />
+        {kb > 0 && <button className="chip on" onClick={() => document.activeElement?.blur?.()}>Done</button>}
       </div>
       <div className="scroll-x" style={{ marginBottom: 10 }}>
         {["ALL", "QB", "RB", "WR", "TE", "FLX", "K", "DST"].map((x) => (
@@ -1635,7 +2019,7 @@ function DraftRoom({ lg, setLg, toast }) {
         ))}
       </div>
 
-      <div className="card tight">
+      <div className="card tight" style={kb ? { marginBottom: kb + 16 } : undefined}>
         {filtered.slice(0, 60).map((p) => {
           const gap = tierGap(p);
           return (
@@ -1644,7 +2028,7 @@ function DraftRoom({ lg, setLg, toast }) {
               right={
                 <div className="row" style={{ gap: 8 }}>
                   <div style={{ textAlign: "right" }}>
-                    <div className="num" style={{ fontSize: 13, fontWeight: 700 }}>{Math.round(proj(p, lg.settings.ppr))}</div>
+                    <div className="num" style={{ fontSize: 13, fontWeight: 700 }}>{Math.round(proj(p, scoringOf(lg)))}</div>
                     <div className="sub">proj</div>
                   </div>
                   {isUser && <button className="btn sm" onClick={(e) => { e.stopPropagation(); pick(p); }}>Draft</button>}
@@ -1663,7 +2047,7 @@ function DraftRoom({ lg, setLg, toast }) {
 }
 
 function PlayerCard({ p, lg, onDraft, available }) {
-  const ppr = lg.settings.ppr;
+  const ppr = scoringOf(lg);
   const posRankAvail = available ? available.filter((x) => x.pos === p.pos).findIndex((x) => x.id === p.id) + 1 : null;
   const myBye = (lg.rosters[lg.settings.userSlot] || []).filter((id) => BY_ID[id].bye === p.bye).length;
   const risk = p.spread > 0.3 ? "High variance. Wide range of outcomes" : p.spread > 0.2 ? "Moderate variance" : "Stable, well-defined role";
@@ -1699,7 +2083,7 @@ function gradeFor(score) {
 }
 
 function gradeTeams(lg) {
-  const ppr = lg.settings.ppr;
+  const ppr = scoringOf(lg);
   const slots = lineupFor(lg.settings);
   return lg.gms.map((g) => {
     const ids = lg.rosters[g.idx];
@@ -1782,7 +2166,7 @@ function DraftRecap({ lg }) {
         <h2 style={{ fontSize: 19, marginBottom: 9 }}>Biggest value picks</h2>
         {steals.slice(0, 5).map((s) => (
           <div key={s.pk.overall} className="row sp" style={{ padding: "6px 0" }}>
-            <div className="mini" style={{ color: "var(--chalk)" }}>{s.p.name} <span style={{ color: "var(--mute)" }}>· {lg.gms[s.pk.gmIdx].name}</span></div>
+            <div className="mini" style={{ color: "var(--chalk)" }}><Tap id={s.p.id}>{s.p.name}</Tap> <span style={{ color: "var(--mute)" }}>· {lg.gms[s.pk.gmIdx].name}</span></div>
             <div className="num" style={{ color: "var(--green)", fontSize: 12 }}>+{s.edge}</div>
           </div>
         ))}
@@ -1790,7 +2174,7 @@ function DraftRecap({ lg }) {
         <h2 style={{ fontSize: 19, marginBottom: 9 }}>Biggest reaches</h2>
         {steals.slice(-4).reverse().map((s) => (
           <div key={s.pk.overall} className="row sp" style={{ padding: "6px 0" }}>
-            <div className="mini" style={{ color: "var(--chalk)" }}>{s.p.name} <span style={{ color: "var(--mute)" }}>· {lg.gms[s.pk.gmIdx].name}</span></div>
+            <div className="mini" style={{ color: "var(--chalk)" }}><Tap id={s.p.id}>{s.p.name}</Tap> <span style={{ color: "var(--mute)" }}>· {lg.gms[s.pk.gmIdx].name}</span></div>
             <div className="num" style={{ color: "var(--red)", fontSize: 12 }}>{s.edge}</div>
           </div>
         ))}
@@ -1805,7 +2189,7 @@ function DraftRecap({ lg }) {
 
 function TeamView({ lg, setLg, toast }) {
   const u = lg.settings.userSlot;
-  const ppr = lg.settings.ppr;
+  const ppr = scoringOf(lg);
   const season = lg.season;
   const week = season ? season.week : 1;
   const slots = lineupFor(lg.settings);
@@ -1860,11 +2244,12 @@ function TeamView({ lg, setLg, toast }) {
                 <>
                   <div className={POSC(p.pos)}>{p.pos === "DST" ? "DEF" : p.pos}</div>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div className="nm">{p.name} {bad && <span className={`tag ${p.bye === week ? "t-bye" : "t-out"}`}>{p.bye === week ? "BYE" : "OUT"}</span>}</div>
-                    <div className="sub">{p.team} · {values[p.id].ppg.toFixed(1)} ppg proj</div>
+                    <div className="nm"><Tap id={p.id}>{p.name}</Tap> {bad && <span className={`tag ${p.bye === week ? "t-bye" : "t-out"}`}>{p.bye === week ? "BYE" : "OUT"}</span>}</div>
+                    <div className="sub">{p.team}{oppLabel(p, season, week, values)}</div>
                   </div>
                 </>
               ) : <div style={{ flex: 1 }} className="mini">Tap to fill</div>}
+              {p && season ? <RangeCell p={p} season={season} week={week} values={values} /> : null}
               <div style={{ color: "var(--mute)", fontSize: 18 }}>›</div>
             </div>
           );
@@ -1878,11 +2263,13 @@ function TeamView({ lg, setLg, toast }) {
           const out = season?.injuries[id] > 0;
           return <PlayerRow key={id} p={p}
             tag={out ? { c: "t-out", t: `OUT ${season.injuries[id] > 20 ? "SEA" : season.injuries[id] + "w"}` } : p.bye === week ? { c: "t-bye", t: "BYE" } : null}
-            sub={`${p.team} · Bye ${p.bye || "TBD"}`}
-            right={<div style={{ textAlign: "right" }}>
-              <div className="num" style={{ fontSize: 13, fontWeight: 700 }}>{values[id].ppg.toFixed(1)}</div>
-              <div className="sub">ppg</div>
-            </div>} />;
+            sub={season ? `${p.team}${oppLabel(p, season, week, values)}` : `${p.team} · Bye ${p.bye || "TBD"}`}
+            right={season
+              ? <RangeCell p={p} season={season} week={week} values={values} />
+              : <div style={{ textAlign: "right" }}>
+                  <div className="num" style={{ fontSize: 13, fontWeight: 700 }}>{values[id].ppg.toFixed(1)}</div>
+                  <div className="sub">ppg</div>
+                </div>} />;
         })}
         {!bench.length && <div style={{ padding: 16 }} className="mini">Bench is empty.</div>}
       </div>
@@ -1906,6 +2293,37 @@ function TeamView({ lg, setLg, toast }) {
               right={<div className="chip">{inLineup ? "Swap" : "Start"}</div>} />;
           })}
       </Sheet>
+    </div>
+  );
+}
+
+// "· vs SEA · tough" style line under a player in a live mock week
+function oppLabel(p, season, week, values) {
+  if (!season) return ` · Bye ${p.bye || "TBD"}`;
+  const o = weekOutlook(p, season, week, values);
+  if (o.status === "BYE") return " · on bye";
+  if (o.status === "OUT") return " · injured";
+  if (!o.opp) return " · no game";
+  return ` · vs ${o.opp}`;
+}
+
+// Floor and ceiling for one player in one week, drawn as a band.
+function RangeCell({ p, season, week, values }) {
+  const o = weekOutlook(p, season, week, values);
+  if (o.status) {
+    return <div className="rng"><div className="sub" style={{ color: "var(--mute)" }}>{o.status === "BYE" ? "Bye" : "Out"}</div></div>;
+  }
+  const cap = Math.max(o.high, 1);
+  const l = (o.low / cap) * 100, h = 100, m = (o.mean / cap) * 100;
+  return (
+    <div className="rng">
+      <div className="num" style={{ fontSize: 13, fontWeight: 700 }}>{o.mean.toFixed(1)}</div>
+      <div className="rngbar">
+        <i style={{ left: `${l}%`, right: `${100 - h}%` }} />
+        <b style={{ left: `calc(${m}% - 1px)` }} />
+      </div>
+      <div className="num" style={{ fontSize: 10, color: "var(--mute)" }}>{o.low.toFixed(1)}–{o.high.toFixed(1)}</div>
+      <div className={`opp o-${o.grade}`}>{o.grade === "even" ? "neutral" : o.grade} matchup</div>
     </div>
   );
 }
@@ -2110,18 +2528,20 @@ function SeasonView({ lg, setLg, toast, setTab }) {
 
   return (
     <div className="wrap">
-      <div className="row sp" style={{ marginBottom: 12 }}>
-        <div>
-          <div className="eyebrow">{done ? "Season complete" : rs ? "Regular season" : "Playoffs"}</div>
-          <h1 style={{ fontSize: 28, marginTop: 3 }}>{done ? "Final" : `Week ${s.week}`}</h1>
-        </div>
-        <div className="row" style={{ gap: 6, overflowX: "auto", flexWrap: "nowrap", WebkitOverflowScrolling: "touch", maxWidth: "100%", paddingBottom: 2 }}>
-          {["hub", "recap", "standings", "wire", "trade"].map((v) => (
-            <button key={v} className={`chip ${view === v ? "on" : ""}`} style={{ flex: "0 0 auto", whiteSpace: "nowrap" }} onClick={() => setView(v)}>
-              {v === "hub" ? "Mock Hub" : v === "recap" ? "Mock Scores" : v === "standings" ? "Mock Table" : v === "wire" ? "Mock Waiver Wire" : "Mock Trade"}
+      <div style={{ marginBottom: 10 }}>
+        <div className="eyebrow">{done ? "Season complete" : rs ? "Regular season" : "Playoffs"}</div>
+        <h1 style={{ fontSize: 28, marginTop: 3 }}>{done ? "Final" : `Week ${s.week}`}</h1>
+      </div>
+      {/* one row, five equal segments, so nothing scrolls sideways */}
+      <div className="segs">
+        {[["hub", "Hub"], ["recap", "Scores"], ["standings", "Table"], ["wire", "Wire"], ["trade", "Trade"]].map(([v, l]) => {
+          const alert = (v === "wire" && claims.length > 0) || (v === "hub" && s.tradeOffer);
+          return (
+            <button key={v} className={`seg ${view === v ? "on" : ""}`} onClick={() => setView(v)}>
+              {l}{alert ? <span className="badge" aria-hidden="true">1</span> : null}
             </button>
-          ))}
-        </div>
+          );
+        })}
       </div>
 
       {done && <ChampionCard lg={lg} s={s} />}
@@ -2291,7 +2711,7 @@ function TradeDesk({ lg, setLg, values, toast }) {
             style={{ cursor: "pointer", background: on ? "rgba(255,212,0,.10)" : undefined }}>
             <div className={POSC(BY_ID[id].pos)}>{BY_ID[id].pos === "DST" ? "DEF" : BY_ID[id].pos}</div>
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div className="nm">{BY_ID[id].name}</div>
+              <div className="nm"><Tap id={id}>{BY_ID[id].name}</Tap></div>
               <div className="sub">{BY_ID[id].team} · {values[id].ppg.toFixed(1)} ppg · value {values[id].tv}</div>
             </div>
             <div className={`chip ${on ? "on" : ""}`}>{on ? "Added" : "Add"}</div>
@@ -2320,7 +2740,36 @@ function TradeDesk({ lg, setLg, values, toast }) {
           <h2 style={{ fontSize: 21, margin: "5px 0 9px", color: v.pct < -8 ? "var(--green)" : v.pct > 8 ? "var(--red)" : "var(--first)" }}>
             {v.verdict}
           </h2>
-          <div className="row sp mini"><span>Out {v.a}</span><span>In {v.b}</span></div>
+          <div className="row sp mini" style={{ marginBottom: 9 }}><span>Out {v.a}</span><span>In {v.b}</span></div>
+          <div className="divider" />
+          {(() => {
+            const meImpact = swapImpact(lg, lg.rosters[u], mine, theirs, values);
+            const themImpact = swapImpact(lg, lg.rosters[partner], theirs, mine, values);
+            return (
+              <>
+                <div className="eyebrow" style={{ marginBottom: 6 }}>Weekly lineup impact</div>
+                <div className="row sp mini" style={{ marginBottom: 4 }}>
+                  <span>You</span>
+                  <b className="num" style={{ color: meImpact > 0.4 ? "var(--green)" : meImpact < -0.4 ? "var(--red)" : "var(--mute)" }}>
+                    {meImpact > 0 ? "+" : ""}{meImpact.toFixed(1)} pts
+                  </b>
+                </div>
+                <div className="row sp mini" style={{ marginBottom: 7 }}>
+                  <span>{lg.gms[partner].name}</span>
+                  <b className="num" style={{ color: themImpact > 0.4 ? "var(--green)" : themImpact < -0.4 ? "var(--red)" : "var(--mute)" }}>
+                    {themImpact > 0 ? "+" : ""}{themImpact.toFixed(1)} pts
+                  </b>
+                </div>
+                <div className="mini">
+                  {meImpact > 0.4 && themImpact > 0.4
+                    ? "Both lineups improve. These are the deals that actually get accepted."
+                    : themImpact < 0
+                      ? "Their starting lineup gets worse, so expect a no unless the value gap is large."
+                      : "Check that your own weekly total is moving the right way before you send it."}
+                </div>
+              </>
+            );
+          })()}
         </div>
       )}
 
@@ -2427,7 +2876,7 @@ function WeekRecap({ lg, wk }) {
           <h2 style={{ fontSize: 18, marginBottom: 8 }}>Injury report</h2>
           {wk.injuries.map((n) => (
             <div key={n.id} className="mini" style={{ marginBottom: 4 }}>
-              <span style={{ color: "var(--red)", fontWeight: 700 }}>{BY_ID[n.id].name}</span> out {n.wks > 20 ? "for the season" : `${n.wks} week${n.wks > 1 ? "s" : ""}`}
+              <Tap id={n.id} style={{ color: "var(--red)", fontWeight: 700 }}>{BY_ID[n.id].name}</Tap> out {n.wks > 20 ? "for the season" : `${n.wks} week${n.wks > 1 ? "s" : ""}`}
             </div>
           ))}
         </div>
@@ -2473,7 +2922,7 @@ function StandingsView({ lg, s, table }) {
               <div className="eyebrow" style={{ marginBottom: 3 }}>Week {entry.week} waivers</div>
               {entry.items.map((it, k) => (
                 <div key={k} className="mini" style={{ marginBottom: 3 }}>
-                  <b style={{ color: lg.gms[it.gm].isUser ? "var(--first)" : "var(--chalk)" }}>{lg.gms[it.gm].name}</b> added {BY_ID[it.add].name}{it.bid != null ? ` ($${it.bid})` : ""}
+                  <b style={{ color: lg.gms[it.gm].isUser ? "var(--first)" : "var(--chalk)" }}>{lg.gms[it.gm].name}</b> added <Tap id={it.add}>{BY_ID[it.add].name}</Tap>{it.bid != null ? ` ($${it.bid})` : ""}
                   {it.drop ? `, dropped ${BY_ID[it.drop].name}` : ""}
                   {it.losers.length ? `, outbid ${it.losers.length}` : ""}
                 </div>
@@ -2543,10 +2992,12 @@ function WireView({ lg, s, values, claims, setClaims, claimFor, setClaimFor, toa
       <Sheet open={!!claimFor} onClose={() => setClaimFor(null)} title={`Claim ${claimFor?.name || ""}`}>
         {faab && <>
           <div className="eyebrow" style={{ marginBottom: 4 }}>Bid (${s.faab[u]} left)</div>
-          <input type="number" min={0} max={s.faab[u]} value={bid} onChange={(e) => setBid(+e.target.value)} style={{ marginBottom: 11 }} />
+          <input type="number" inputMode="numeric" enterKeyHint="done" min={0} max={s.faab[u]} value={bid}
+            onChange={(e) => setBid(+e.target.value)} style={{ marginBottom: 11 }}
+            onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }} />
         </>}
         <div className="eyebrow" style={{ marginBottom: 6 }}>Drop</div>
-        <div style={{ maxHeight: 240, overflowY: "auto", marginBottom: 11 }}>
+        <div style={{ maxHeight: 240, overflowY: "auto", marginBottom: 11, WebkitOverflowScrolling: "touch" }}>
           {myIds.slice().sort((a, b) => values[a].ppg - values[b].ppg).map((id) => (
             <PlayerRow key={id} p={BY_ID[id]} onClick={() => setDrop(id)}
               sub={`${values[id].ppg.toFixed(1)} ppg`}
@@ -2585,11 +3036,11 @@ function OfferCard({ lg, setLg, values, toast }) {
       <div className="grid2" style={{ marginBottom: 10 }}>
         <div>
           <div className="eyebrow" style={{ marginBottom: 4 }}>You send</div>
-          {o.wants.map((id) => <div key={id} className="mini" style={{ color: "var(--chalk)" }}>{BY_ID[id].name}</div>)}
+          {o.wants.map((id) => <div key={id} className="mini" style={{ color: "var(--chalk)" }}><Tap id={id}>{BY_ID[id].name}</Tap></div>)}
         </div>
         <div>
           <div className="eyebrow" style={{ marginBottom: 4 }}>You get</div>
-          {o.gives.map((id) => <div key={id} className="mini" style={{ color: "var(--chalk)" }}>{BY_ID[id].name}</div>)}
+          {o.gives.map((id) => <div key={id} className="mini" style={{ color: "var(--chalk)" }}><Tap id={id}>{BY_ID[id].name}</Tap></div>)}
         </div>
       </div>
       <div className="mini" style={{ marginBottom: 10 }}>
@@ -2625,11 +3076,17 @@ function matchPlayer(raw) {
 
 function PlayerPicker({ open, onClose, onPick, pool, title }) {
   const [q, setQ] = useState("");
+  const kb = useKeyboardInset();
   const list = (pool || PLAYERS).filter((p) => !q || norm(p.name).includes(norm(q))).slice(0, 50);
   return (
     <Sheet open={open} onClose={onClose} title={title || "Add player"}>
-      <input placeholder="Search" value={q} onChange={(e) => setQ(e.target.value)} style={{ marginBottom: 10 }} autoFocus />
-      <div style={{ maxHeight: "58vh", overflowY: "auto" }}>
+      <input placeholder="Search players" value={q} onChange={(e) => setQ(e.target.value)}
+        style={{ marginBottom: 10 }} enterKeyHint="search"
+        onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }} />
+      <div
+        style={{ maxHeight: kb ? `calc(100vh - ${kb + 210}px)` : "58vh", overflowY: "auto", WebkitOverflowScrolling: "touch" }}
+        onTouchMove={() => { if (document.activeElement?.blur) document.activeElement.blur(); }}
+      >
         {list.map((p) => <PlayerRow key={p.id} p={p} onClick={() => { onPick(p); setQ(""); }} />)}
       </div>
     </Sheet>
@@ -2696,11 +3153,34 @@ function TradeCalc({ lg }) {
           <div className="row sp mini" style={{ marginBottom: 10 }}>
             <span>Out {v.a}</span><span>In {v.b}</span>
           </div>
+          {myIds.length > 0 && (() => {
+            const impact = swapImpact(lg, myIds, send.map((p) => p.id), get.map((p) => p.id), values);
+            return (
+              <>
+                <div className="divider" />
+                <div className="eyebrow" style={{ marginBottom: 5 }}>What it does to your lineup</div>
+                <div className="row sp" style={{ marginBottom: 7 }}>
+                  <div className="mini">Weekly starting points</div>
+                  <div className="num disp" style={{ fontSize: 22, color: impact > 0.4 ? "var(--green)" : impact < -0.4 ? "var(--red)" : "var(--mute)" }}>
+                    {impact > 0 ? "+" : ""}{impact.toFixed(1)}
+                  </div>
+                </div>
+                <div className="mini">
+                  {Math.abs(impact) < 0.4
+                    ? "Almost no change to what you actually start. Market value moves, your Sunday does not."
+                    : impact > 0
+                      ? `You would start ${impact.toFixed(1)} more points a week. This is the number that matters more than the raw value split.`
+                      : `You would start ${Math.abs(impact).toFixed(1)} fewer points a week, even if the value looks close.`}
+                </div>
+              </>
+            );
+          })()}
+          <div className="divider" />
           <div className="mini">
-            Values are rest-of-season points over replacement, curved so a single elite player outweighs the raw sum of
-            two mid pieces, because you only start so many.
+            Market value is rest-of-season points over replacement, weighted toward playoff weeks and curved so one
+            elite player outweighs two mid pieces. Roster impact above is what those players do for your actual lineup.
             {send.length > get.length && " You're consolidating, which this model rewards."}
-            {get.length > send.length && " You're taking on more bodies; the depth only pays off if you can actually start it."}
+            {get.length > send.length && " You're taking on more bodies, and depth only pays off if you can start it."}
           </div>
         </div>
       )}
@@ -2712,37 +3192,150 @@ function TradeCalc({ lg }) {
 
 /* ---- in-league trade finder ---- */
 
-function findTrades(lg, myIds, values, rosters) {
-  const out = [];
-  const myWeak = weakestPosFromIds(myIds, values);
-  for (const [gmIdx, ids] of Object.entries(rosters)) {
-    if (Number(gmIdx) === lg.settings.userSlot) continue;
-    const theirWeak = weakestPosFromIds(ids, values);
-    const myGive = myIds.filter((id) => BY_ID[id].pos === theirWeak).sort((a, b) => values[b].tv - values[a].tv);
-    const theirGive = ids.filter((id) => BY_ID[id].pos === myWeak).sort((a, b) => values[b].tv - values[a].tv);
-    for (const g of myGive.slice(0, 4)) {
-      for (const t of theirGive.slice(0, 4)) {
-        const v = tradeVerdict([g], [t], values);
-        const ratio = v.b / Math.max(0.1, v.a);
-        if (ratio < 0.82 || ratio > 1.35) continue;
-        // must actually be a surplus piece for me and a starter upgrade
-        const mySurplus = myIds.filter((id) => BY_ID[id].pos === BY_ID[g].pos && values[id].ppg >= values[g].ppg).length;
-        if (mySurplus < 2) continue;
-        out.push({ gmIdx: Number(gmIdx), give: [g], getIds: [t], v, myWeak, theirWeak, ratio });
-      }
-    }
-    // 2-for-1 consolidation
-    if (myGive.length >= 2 && theirGive.length) {
-      const pkg = [myGive[0], myGive[1]];
-      const target = theirGive[0];
-      const v = tradeVerdict(pkg, [target], values);
-      if (v.b / Math.max(0.1, v.a) > 0.8) out.push({ gmIdx: Number(gmIdx), give: pkg, getIds: [target], v, myWeak, theirWeak, ratio: v.b / v.a });
-    }
-  }
-  return out.sort((a, b) => b.ratio - a.ratio).slice(0, 8);
+/* Trade finder.
+   Real packages almost never send two of the same scarce position, and nobody
+   accepts a deal that hands the other side three times the value. Both of those
+   are filtered out here, and every suggestion is checked against what it does to
+   the partner's actual starting lineup. */
+
+// which multi-player packages are believable
+function packageOK(ids) {
+  if (ids.length < 2) return true;
+  const count = {};
+  ids.forEach((id) => { const p = BY_ID[id].pos; count[p] = (count[p] || 0) + 1; });
+  // nobody trades away two quarterbacks or two tight ends together
+  if ((count.QB || 0) > 1) return false;
+  if ((count.TE || 0) > 1) return false;
+  if ((count.K || 0) > 1 || (count.DST || 0) > 1) return false;
+  if (count.K || count.DST) return false;          // kickers and defenses are not trade chips
+  return true;
 }
 
-function weakestPosFromIds(ids, values) {
+// two backs or two receivers only work when you are genuinely deep there
+function canSpare(ids, playerIds, values) {
+  const byPos = {};
+  playerIds.forEach((id) => { const p = BY_ID[id].pos; (byPos[p] = byPos[p] || []).push(id); });
+  for (const [pos, list] of Object.entries(byPos)) {
+    if (list.length < 2) continue;
+    const depth = ids.filter((id) => BY_ID[id].pos === pos).length;
+    if (depth < 4) return false;
+    // the pieces going out must not be your top two at the spot
+    const ranked = ids.filter((id) => BY_ID[id].pos === pos).sort((a, b) => values[b].ppg - values[a].ppg);
+    if (list.some((id) => ranked.indexOf(id) < 2)) return false;
+  }
+  return true;
+}
+
+// after the deal, can this roster still field a legal starting lineup with a
+// real bench? Stops packages that send away your only quarterback.
+function stillFieldsATeam(lg, ids, outIds, inIds) {
+  const after = ids.filter((x) => !outIds.includes(x)).concat(inIds);
+  const c = { QB: 0, RB: 0, WR: 0, TE: 0, K: 0, DST: 0 };
+  after.forEach((id) => { c[BY_ID[id].pos] = (c[BY_ID[id].pos] || 0) + 1; });
+  const min = lg.settings.superflex
+    ? { QB: 2, RB: 3, WR: 3, TE: 1, K: 1, DST: 1 }
+    : { QB: 1, RB: 3, WR: 3, TE: 1, K: 1, DST: 1 };
+  return Object.entries(min).every(([pos, n]) => (c[pos] || 0) >= n);
+}
+
+function findTrades(lg, myIds, values, rosters) {
+  const out = [];
+  const seen = new Set();
+  const myWeak = weakestPosFromIds(myIds, values);
+
+  const add = (gmIdx, give, getIds, theirWeak, ids) => {
+    if (!packageOK(give) || !packageOK(getIds)) return;
+    if (!canSpare(myIds, give, values)) return;
+    if (!canSpare(ids, getIds, values)) return;
+    if (!stillFieldsATeam(lg, myIds, give, getIds)) return;
+    if (!stillFieldsATeam(lg, ids, getIds, give)) return;
+    const v = tradeVerdict(give, getIds, values);
+    const ratio = v.b / Math.max(0.1, v.a);
+    // both a floor and a ceiling: a deal that is far too good for you is one
+    // the other manager simply declines
+    if (ratio < 0.82 || ratio > 1.32) return;
+    // it has to help their weekly lineup, or they say no
+    const theirGain = swapImpact(lg, ids, getIds, give, values);
+    const myGain = swapImpact(lg, myIds, give, getIds, values);
+    if (theirGain < 0.1) return;
+    const consolidating = give.length > getIds.length;
+    if (consolidating) {
+      /* Sending two for one almost always dips your weekly total, because a
+         bench player has to fill the vacated slot. That is the real cost of
+         consolidation, and it is worth paying only when the incoming player is
+         a genuine top-end starter. */
+      const inc = getIds[0];
+      const atPos = myIds.filter((id) => BY_ID[id].pos === BY_ID[inc].pos && !give.includes(id))
+        .sort((a, b) => values[b].ppg - values[a].ppg);
+      const beatsMyBest = values[inc].ppg > (values[atPos[0]]?.ppg ?? 0);
+      if (!beatsMyBest || myGain < -1.6) return;
+    } else if (myGain < 0.1) return;
+    const sig = [gmIdx, give.slice().sort().join(","), getIds.slice().sort().join(",")].join("|");
+    if (seen.has(sig)) return;
+    seen.add(sig);
+    out.push({ gmIdx: Number(gmIdx), give, getIds, v, myWeak, theirWeak, ratio, myGain, theirGain });
+  };
+
+  for (const [gmIdxRaw, ids] of Object.entries(rosters)) {
+    const gmIdx = Number(gmIdxRaw);
+    if (gmIdx === lg.settings.userSlot) continue;
+    const theirWeak = weakestPosFromIds(ids, values);
+
+    // pieces I can spare at the spot they need, and what they have at mine
+    const myGive = myIds.filter((id) => BY_ID[id].pos === theirWeak)
+      .sort((a, b) => values[b].tv - values[a].tv);
+    const theirGive = ids.filter((id) => BY_ID[id].pos === myWeak)
+      .sort((a, b) => values[b].tv - values[a].tv);
+
+    // straight one for one
+    for (const g of myGive.slice(0, 4)) {
+      const surplus = myIds.filter((id) => BY_ID[id].pos === BY_ID[g].pos && values[id].ppg >= values[g].ppg).length;
+      if (surplus < 2) continue;
+      for (const t of theirGive.slice(0, 4)) add(gmIdx, [g], [t], theirWeak, ids);
+    }
+
+    // two for one, but the two pieces come from different positions so the
+    // package reads like something a real manager would actually send
+    const filler = myIds
+      .filter((id) => !myGive.includes(id) && !["K", "DST"].includes(BY_ID[id].pos))
+      .sort((a, b) => values[b].tv - values[a].tv);
+    for (const g of myGive.slice(0, 2)) {
+      for (const f of filler.slice(0, 6)) {
+        if (BY_ID[f].pos === BY_ID[g].pos) {
+          // same position is allowed only for backs and receivers, and only deep
+          if (!["RB", "WR"].includes(BY_ID[f].pos)) continue;
+        }
+        for (const t of theirGive.slice(0, 3)) add(gmIdx, [g, f], [t], theirWeak, ids);
+      }
+    }
+  }
+
+  // spread suggestions across teams instead of stacking one partner
+  const perTeam = {};
+  return out
+    .sort((a, b) => (b.myGain + b.theirGain) - (a.myGain + a.theirGain))
+    .filter((t) => {
+      perTeam[t.gmIdx] = (perTeam[t.gmIdx] || 0) + 1;
+      return perTeam[t.gmIdx] <= 2;
+    })
+    .slice(0, 8);
+}
+
+// plain-language reason a package makes sense, written from the actual pieces
+function tradeRationale(t) {
+  const outPos = [...new Set(t.give.map((id) => BY_ID[id].pos))];
+  const inPos = [...new Set(t.getIds.map((id) => BY_ID[id].pos))];
+  const names = t.getIds.map((id) => BY_ID[id].name.split(" ").slice(-1)[0]).join(" and ");
+  const consolidating = t.give.length > t.getIds.length;
+  const bits = [];
+  bits.push(`They need ${t.theirWeak} and you can spare ${outPos.join(" and ")}.`);
+  bits.push(consolidating
+    ? `You trade depth for ${names}. Your bench gets thinner, which is the price of a better starter.`
+    : `${names} slots straight into your ${inPos.join("/")} hole.`);
+  return bits.join(" ");
+}
+
+export function weakestPosFromIds(ids, values) {
   const need = { QB: 1, RB: 3, WR: 3, TE: 1 };
   const bench = { QB: 15, RB: 11, WR: 11, TE: 8 };
   let worst = "RB", gap = -99;
@@ -2779,14 +3372,22 @@ function TradeFinder({ lg, toast }) {
           <div className="grid2" style={{ marginBottom: 9 }}>
             <div>
               <div className="eyebrow" style={{ marginBottom: 4 }}>You send</div>
-              {t.give.map((id) => <div key={id} className="mini" style={{ color: "var(--chalk)" }}>{BY_ID[id].name} <span style={{ color: "var(--mute)" }}>{BY_ID[id].pos}</span></div>)}
+              {t.give.map((id) => <div key={id} className="mini" style={{ color: "var(--chalk)" }}><Tap id={id}>{BY_ID[id].name}</Tap> <span style={{ color: "var(--mute)" }}>{BY_ID[id].pos}</span></div>)}
             </div>
             <div>
               <div className="eyebrow" style={{ marginBottom: 4 }}>You get</div>
-              {t.getIds.map((id) => <div key={id} className="mini" style={{ color: "var(--chalk)" }}>{BY_ID[id].name} <span style={{ color: "var(--mute)" }}>{BY_ID[id].pos}</span></div>)}
+              {t.getIds.map((id) => <div key={id} className="mini" style={{ color: "var(--chalk)" }}><Tap id={id}>{BY_ID[id].name}</Tap> <span style={{ color: "var(--mute)" }}>{BY_ID[id].pos}</span></div>)}
             </div>
           </div>
-          <div className="mini">Why they'd take it: they're thin at {t.theirWeak} and you're stacked there. You fill {t.myWeak}.</div>
+          <div className="mini">{tradeRationale(t)}</div>
+          <div className="row sp mini" style={{ marginTop: 7 }}>
+            <span>Your weekly starters</span>
+            <b className="num" style={{ color: "var(--green)" }}>+{t.myGain.toFixed(1)}</b>
+          </div>
+          <div className="row sp mini">
+            <span>Theirs</span>
+            <b className="num" style={{ color: "var(--mute)" }}>+{t.theirGain.toFixed(1)}</b>
+          </div>
         </div>
       ))}
     </>
@@ -2950,7 +3551,7 @@ function Versus({ lg }) {
   const [a, setA] = useState(PLAYERS[12]);
   const [b, setB] = useState(PLAYERS[19]);
   const [pick, setPick] = useState(null);
-  const ppr = lg.settings.ppr;
+  const ppr = scoringOf(lg);
   const myIds = lg.rosters?.[lg.settings.userSlot] || [];
 
   const score = (p) => {
@@ -3026,7 +3627,7 @@ function Versus({ lg }) {
 }
 
 function Radar({ lg }) {
-  const ppr = lg.settings.ppr;
+  const ppr = scoringOf(lg);
   const rows = useMemo(() => {
     const values = buildValues(lg, null);
     return PLAYERS.filter((p) => p.adp > 60 && !["K", "DST"].includes(p.pos))
@@ -3057,6 +3658,7 @@ function Radar({ lg }) {
 }
 
 function GMChat({ lg }) {
+  const kb = useKeyboardInset();
   const [msgs, setMsgs] = useState([]);
   const [q, setQ] = useState("");
   const [busy, setBusy] = useState(false);
@@ -3098,9 +3700,11 @@ function GMChat({ lg }) {
         </div>
       ))}
       {busy && <div className="card"><div className="mini">Thinking…</div></div>}
-      <div className="row" style={{ gap: 7, marginTop: 4 }}>
+      <div className="row" style={{ gap: 7, marginTop: 4, marginBottom: kb ? kb + 12 : 0 }}>
         <input placeholder="Who do I start at flex?" value={q} onChange={(e) => setQ(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && send()} />
+          enterKeyHint="send"
+          onFocus={(e) => setTimeout(() => e.target.scrollIntoView({ block: "center", behavior: "smooth" }), 250)}
+          onKeyDown={(e) => { if (e.key === "Enter") { e.currentTarget.blur(); send(); } }} />
         <button className="btn sm" onClick={send} disabled={busy}>Ask</button>
       </div>
     </>
@@ -3114,7 +3718,7 @@ function GMChat({ lg }) {
    with no mock league required. Saved separately from any league.
    ============================================================ */
 
-export const VERSION = "1.4.0";
+export const VERSION = "1.8.0";
 const MY_KEY = "huddle:myteam";
 
 const DEFAULT_MY = { ids: [], teams: 12, ppr: 1, superflex: false, name: "My Team", topPad: 0 };
@@ -3123,7 +3727,7 @@ const DEFAULT_MY = { ids: [], teams: 12, ppr: 1, superflex: false, name: "My Tea
 function shellLeague(my) {
   return {
     id: "real", name: my.name,
-    settings: { teams: my.teams, rounds: 15, ppr: my.ppr, superflex: my.superflex, userSlot: 0, faab: 100, waiverMode: "faab" },
+    settings: { teams: my.teams, rounds: 15, ppr: my.ppr, scoring: resolveScoring(my.scoring ?? my.ppr), superflex: my.superflex, userSlot: 0, faab: 100, waiverMode: "faab" },
     gms: [{ idx: 0, name: my.name, isUser: true }],
     order: [], picks: [], rosters: { 0: my.ids }, season: null,
   };
@@ -3150,7 +3754,7 @@ function useMyTeam() {
 function MyRoster({ my, save, toast, compact }) {
   const [pick, setPick] = useState(false);
   const lg = shellLeague(my);
-  const values = useMemo(() => buildValues(lg, null), [my.ids.length, my.ppr, my.teams, my.superflex]);
+  const values = useMemo(() => buildValues(lg, null), [my.ids.length, my.ppr, my.teams, my.superflex, JSON.stringify(my.scoring || null)]);
   const sorted = [...my.ids].sort((a, b) => values[b].ppg - values[a].ppg);
 
   return (
@@ -3260,14 +3864,17 @@ function RealTradeFinder({ my }) {
           <div className="grid2" style={{ marginBottom: 9 }}>
             <div>
               <div className="eyebrow" style={{ marginBottom: 4 }}>Send</div>
-              {t.give.map((id) => <div key={id} className="mini" style={{ color: "var(--chalk)" }}>{BY_ID[id].name} <span style={{ color: "var(--mute)" }}>{BY_ID[id].pos}</span></div>)}
+              {t.give.map((id) => <div key={id} className="mini" style={{ color: "var(--chalk)" }}><Tap id={id}>{BY_ID[id].name}</Tap> <span style={{ color: "var(--mute)" }}>{BY_ID[id].pos}</span></div>)}
             </div>
             <div>
               <div className="eyebrow" style={{ marginBottom: 4 }}>Ask for</div>
-              {t.getIds.map((id) => <div key={id} className="mini" style={{ color: "var(--chalk)" }}>{BY_ID[id].name} <span style={{ color: "var(--mute)" }}>{BY_ID[id].pos}</span></div>)}
+              {t.getIds.map((id) => <div key={id} className="mini" style={{ color: "var(--chalk)" }}><Tap id={id}>{BY_ID[id].name}</Tap> <span style={{ color: "var(--mute)" }}>{BY_ID[id].pos}</span></div>)}
             </div>
           </div>
-          <div className="mini">You're deep at {BY_ID[t.give[0]].pos} and thin at {weak}. Pitch it to whoever in your league is short {BY_ID[t.give[0]].pos}.</div>
+          <div className="mini">{tradeRationale(t)}</div>
+          <div className="mini" style={{ marginTop: 6 }}>
+            Pitch it to whoever in your league is thinnest at {t.give.map((id) => BY_ID[id].pos).filter((v, i, a) => a.indexOf(v) === i).join(" or ")}.
+          </div>
         </div>
       ))}
     </>
@@ -3299,10 +3906,16 @@ function DraftHelp({ my, save, toast }) {
 function Settings({ my, save, toast, onWipe }) {
   const [leagues, setLeagues] = useState([]);
   const [busy, setBusy] = useState(false);
+  const [view, setView] = useState("main");
   const fileRef = useRef(null);
+  const [boardCount, setBoardCount] = useState(0);
   useEffect(() => {
-    ensureRecoveryRestored().then(() => store.get("huddle:index")).then((v) => setLeagues(v || []));
-  }, []);
+    ensureRecoveryRestored()
+      .then(() => store.get("huddle:index"))
+      .then((v) => setLeagues(v || []))
+      .catch(() => setLeagues([]));
+    store.get(BOARD_INDEX).then((v) => setBoardCount((v || []).length)).catch(() => setBoardCount(0));
+  }, [view]);
 
   const refresh = async () => {
     setBusy(true);
@@ -3352,6 +3965,22 @@ function Settings({ my, save, toast, onWipe }) {
     } catch { toast("That file didn't parse"); }
   };
 
+  if (view === "boards") return <div className="wrap"><BoardArchive onBack={() => setView("main")} /><div className="navpad" /></div>;
+  if (view === "scoring") return (
+    <div className="wrap">
+      <div className="row sp" style={{ marginBottom: 11 }}>
+        <div>
+          <div className="eyebrow">Applies to new leagues and your saved roster</div>
+          <h2 style={{ fontSize: 22, marginTop: 3 }}>Scoring rules</h2>
+        </div>
+        <button className="chip" onClick={() => setView("main")}>Back</button>
+      </div>
+      <ScoringEditor scoring={my.scoring ?? my.ppr} title="Your league scoring"
+        onChange={(sc) => save({ ...my, scoring: sc, ppr: sc.rec })} />
+      <div className="navpad" />
+    </div>
+  );
+
   return (
     <div className="wrap">
       <div className="card fdl m" style={{ paddingLeft: 15 }}>
@@ -3380,6 +4009,30 @@ function Settings({ my, save, toast, onWipe }) {
           ))}
         </div>
       </div>
+
+      <button className="act" onClick={() => setView("boards")}>
+        <div className="ico">DB</div>
+        <div style={{ flex: 1 }}>
+          <h4>Past draft boards</h4>
+          <div className="mini">Every completed draft, round by round, saved automatically</div>
+        </div>
+        <div className="arw">›</div>
+      </button>
+
+      <button className="act g" onClick={() => setView("scoring")}>
+        <div className="ico">PTS</div>
+        <div style={{ flex: 1 }}>
+          <h4>Scoring rules</h4>
+          <div className="mini">
+            {(() => {
+              const sc = resolveScoring(my.scoring ?? my.ppr);
+              const p = SCORING_PRESETS.find((x) => Object.entries(x.patch).every(([k, v]) => Math.abs((sc[k] ?? 0) - v) < 0.001));
+              return p ? `${p.label} · tap to customize` : "Custom rules · tap to edit";
+            })()}
+          </div>
+        </div>
+        <div className="arw">›</div>
+      </button>
 
       <div className="card">
         <h2 style={{ fontSize: 19, marginBottom: 9 }}>Save & restore</h2>
@@ -3411,8 +4064,11 @@ function Settings({ my, save, toast, onWipe }) {
         <div className="row sp mini" style={{ marginBottom: 5 }}>
           <span>Your roster</span><b style={{ color: "var(--chalk)" }}>{my.ids.length} players</b>
         </div>
-        <div className="row sp mini" style={{ marginBottom: 11 }}>
+        <div className="row sp mini" style={{ marginBottom: 5 }}>
           <span>Mock leagues</span><b style={{ color: "var(--chalk)" }}>{leagues.length}</b>
+        </div>
+        <div className="row sp mini" style={{ marginBottom: 11 }}>
+          <span>Saved draft boards</span><b style={{ color: "var(--chalk)" }}>{boardCount}</b>
         </div>
         <button className="btn alt" style={{ color: "var(--red)" }} onClick={async () => {
           if (!window.confirm("Delete your roster and every saved league? This can't be undone.")) return;
@@ -3421,10 +4077,13 @@ function Settings({ my, save, toast, onWipe }) {
             await store.del(`huddle:lg:${m.id}`);
             recoveryDel(recoveryLeagueKey(m.id));
           }
+          const bidx = (await store.get(BOARD_INDEX)) || [];
+          for (const b of bidx) await store.del(boardKey(b.id));
+          await store.set(BOARD_INDEX, []);
           await store.set("huddle:index", []); await store.del(MY_KEY);
           recoverySet(RECOVERY_INDEX, []);
           recoveryDel(RECOVERY_MY); recoveryDel(RECOVERY_ACTIVE);
-          save(DEFAULT_MY); setLeagues([]); onWipe(); toast("Everything cleared");
+          save(DEFAULT_MY); setLeagues([]); setBoardCount(0); onWipe(); toast("Everything cleared");
         }}>Clear all data</button>
       </div>
 
@@ -3436,6 +4095,410 @@ function Settings({ my, save, toast, onWipe }) {
           Week 11, and nobody is off in Week 12.
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ---- tappable player card ----
+   Any player name anywhere opens this. Shows the week-by-week game log, the
+   current outlook, and where the player sits at his position. */
+
+const PlayerCtx = React.createContext(null);
+export function usePlayerCard() { return React.useContext(PlayerCtx); }
+
+// wrap any name to make it open the card
+function Tap({ id, children, style }) {
+  const open = usePlayerCard();
+  if (!open) return <span style={style}>{children}</span>;
+  return (
+    <span
+      onClick={(e) => { e.stopPropagation(); open(id); }}
+      style={{ cursor: "pointer", textDecorationLine: "underline", textDecorationStyle: "dotted",
+        textDecorationColor: "var(--line)", textUnderlineOffset: 3, ...style }}
+    >{children}</span>
+  );
+}
+
+function GameLog({ p, season, values }) {
+  const a = season?.actual?.[p.id];
+  const raw = a?.log || [];
+  const log = raw.map((x, i) => (typeof x === "number" ? { w: i + 1, pts: x } : x));
+  if (!log.length) {
+    return <div className="mini">No games played yet this season.</div>;
+  }
+  const max = Math.max(...log.map((x) => x.pts), 1);
+  const avg = log.reduce((s, x) => s + x.pts, 0) / log.length;
+  const best = log.reduce((b, x) => (x.pts > b.pts ? x : b), log[0]);
+  const worst = log.reduce((b, x) => (x.pts < b.pts ? x : b), log[0]);
+  return (
+    <>
+      <div className="grid3" style={{ marginBottom: 11 }}>
+        <div className="stat"><b className="num">{avg.toFixed(1)}</b><span className="eyebrow">ppg</span></div>
+        <div className="stat"><b className="num">{best.pts.toFixed(1)}</b><span className="eyebrow">best wk {best.w}</span></div>
+        <div className="stat"><b className="num">{worst.pts.toFixed(1)}</b><span className="eyebrow">worst wk {worst.w}</span></div>
+      </div>
+      <div className="eyebrow" style={{ marginBottom: 7 }}>Game log</div>
+      <div style={{ display: "flex", alignItems: "flex-end", gap: 4, height: 92, marginBottom: 6 }}>
+        {log.map((x) => (
+          <div key={x.w} style={{ flex: 1, textAlign: "center", minWidth: 0 }}>
+            <div className="num" style={{ fontSize: 9.5, color: "var(--mute)", marginBottom: 3 }}>{x.pts.toFixed(0)}</div>
+            <div style={{
+              height: Math.max(3, (x.pts / max) * 58), borderRadius: 3,
+              background: x.pts >= avg ? "var(--first)" : "var(--line)",
+            }} />
+            <div className="num" style={{ fontSize: 9, color: "var(--mute)", marginTop: 3 }}>{x.w}</div>
+          </div>
+        ))}
+      </div>
+      <div className="mini">Week number below each bar. Gold bars are above this player's own average.</div>
+    </>
+  );
+}
+
+function PlayerCardSheet({ id, lg, onClose }) {
+  const p = BY_ID[id] || null;
+  const season = lg?.season || null;
+  // hooks run every render, never behind a conditional return
+  const values = useMemo(() => buildValues(lg, season), [lg, season && season.week]);
+  if (!p) return null;
+  const v = values[p.id];
+  const week = season ? season.week : null;
+  const o = season ? weekOutlook(p, season, week, values) : null;
+  const inj = season?.injuries?.[p.id] || 0;
+
+  // where he ranks at his position right now
+  const posRankNow = PLAYERS.filter((x) => x.pos === p.pos)
+    .sort((a, b) => values[b.id].ppg - values[a.id].ppg)
+    .findIndex((x) => x.id === p.id) + 1;
+
+  const owner = lg?.rosters
+    ? Object.entries(lg.rosters).find(([, ids]) => ids.includes(p.id))
+    : null;
+
+  return (
+    <Sheet open={true} onClose={onClose} title={p.name}>
+      <div className="row" style={{ marginBottom: 12 }}>
+        <div className={POSC(p.pos)} style={{ width: 44, height: 28 }}>{p.pos === "DST" ? "DEF" : p.pos}</div>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontWeight: 600 }}>{p.team} · {p.pos}{posRankNow} right now</div>
+          <div className="sub">
+            Bye {p.bye || "TBD"} · drafted around {p.adp}
+            {owner ? ` · rostered by ${lg.gms[Number(owner[0])]?.name || "a team"}` : season ? " · free agent" : ""}
+          </div>
+        </div>
+      </div>
+
+      {inj > 0 && (
+        <div className="card" style={{ borderColor: "var(--red)", marginBottom: 11 }}>
+          <div className="mini" style={{ color: "var(--red)", fontWeight: 700 }}>
+            Out {inj > 20 ? "for the season" : `${inj} more week${inj > 1 ? "s" : ""}`}
+          </div>
+        </div>
+      )}
+
+      {o && !o.status && (
+        <div className="card" style={{ marginBottom: 11 }}>
+          <div className="eyebrow">Week {week} outlook</div>
+          <div className="row sp" style={{ marginTop: 6 }}>
+            <div>
+              <div className="disp num" style={{ fontSize: 26, color: "var(--first)" }}>{o.mean.toFixed(1)}</div>
+              <div className="sub">projected</div>
+            </div>
+            <div style={{ textAlign: "right" }}>
+              <div className="nm">vs {o.opp || "no game"}</div>
+              <div className={`opp o-${o.grade}`}>{o.grade === "even" ? "neutral" : o.grade} matchup</div>
+            </div>
+          </div>
+          <div className="mini" style={{ marginTop: 7 }}>Range {o.low.toFixed(1)} to {o.high.toFixed(1)} in a typical week.</div>
+        </div>
+      )}
+      {o && o.status && (
+        <div className="card" style={{ marginBottom: 11 }}>
+          <div className="mini">{o.status === "BYE" ? `On bye in week ${week}.` : `Not available in week ${week}.`}</div>
+        </div>
+      )}
+
+      {season && <div className="card" style={{ marginBottom: 11 }}><GameLog p={p} season={season} values={values} /></div>}
+
+      <div className="grid3" style={{ marginBottom: 11 }}>
+        <div className="stat"><b className="num">{v.ppg.toFixed(1)}</b><span className="eyebrow">proj ppg</span></div>
+        <div className="stat"><b className="num">{Math.round(v.ros)}</b><span className="eyebrow">rest of season</span></div>
+        <div className="stat"><b className="num">{v.tv}</b><span className="eyebrow">trade value</span></div>
+      </div>
+
+      {season && v.mult !== 1 && (
+        <div className="mini">
+          {v.mult > 1.12
+            ? `Outproducing his draft cost by about ${Math.round((v.mult - 1) * 100)}%. The projection has moved up to match.`
+            : v.mult < 0.9
+              ? `Running about ${Math.round((1 - v.mult) * 100)}% below his draft cost so far.`
+              : "Producing roughly in line with where he was drafted."}
+        </div>
+      )}
+    </Sheet>
+  );
+}
+
+/* ---- draft board archive ----
+   Every completed draft is snapshotted automatically. Player name, team and
+   position are stored inline so an old board still reads correctly even if the
+   player pool changes underneath it. */
+
+const BOARD_INDEX = "huddle:boards";
+const boardKey = (id) => `huddle:board:${id}`;
+
+export function snapshotBoard(lg) {
+  const sc = scoringOf(lg);
+  const label = sc.rec >= 1 ? (sc.tePremium > 0 ? "TE Premium" : "PPR") : sc.rec >= 0.5 ? "Half PPR" : "Standard";
+  return {
+    id: lg.id,
+    name: typeof cleanMockName === "function" ? cleanMockName(lg.name) : lg.name,
+    at: Date.now(),
+    teams: lg.settings.teams,
+    rounds: lg.settings.rounds,
+    userSlot: lg.settings.userSlot,
+    scoringLabel: `${label}${lg.settings.superflex ? " SF" : ""}`,
+    gms: lg.gms.map((g) => ({ idx: g.idx, name: g.name, isUser: !!g.isUser })),
+    picks: lg.picks.map((pk) => {
+      const p = BY_ID[pk.playerId] || {};
+      return {
+        overall: pk.overall,
+        round: Math.floor((pk.overall - 1) / lg.settings.teams) + 1,
+        slot: ((pk.overall - 1) % lg.settings.teams) + 1,
+        gmIdx: pk.gmIdx,
+        name: p.name || "Unknown",
+        pos: p.pos || "",
+        team: p.team || "",
+        adp: p.adp || 0,
+        bye: p.bye || 0,
+      };
+    }),
+  };
+}
+
+export async function archiveBoard(lg) {
+  if (!draftDone(lg)) return false;
+  const board = snapshotBoard(lg);
+  await store.set(boardKey(board.id), board);
+  const idx = (await store.get(BOARD_INDEX)) || [];
+  const meta = { id: board.id, name: board.name, at: board.at, teams: board.teams, rounds: board.rounds, scoringLabel: board.scoringLabel };
+  const next = [meta, ...idx.filter((m) => m.id !== board.id)].slice(0, 40);
+  await store.set(BOARD_INDEX, next);
+  return true;
+}
+
+function BoardArchive({ onBack }) {
+  const [list, setList] = useState(null);
+  const [open, setOpen] = useState(null);
+  const [mineOnly, setMineOnly] = useState(false);
+
+  useEffect(() => { store.get(BOARD_INDEX).then((v) => setList(v || [])); }, []);
+
+  const load = async (id) => { const b = await store.get(boardKey(id)); if (b) setOpen(b); };
+  const remove = async (id) => {
+    await store.del(boardKey(id));
+    const idx = (await store.get(BOARD_INDEX)) || [];
+    const next = idx.filter((m) => m.id !== id);
+    await store.set(BOARD_INDEX, next); setList(next);
+  };
+
+  if (open) {
+    const rounds = [];
+    for (let r = 1; r <= open.rounds; r++) {
+      const inRound = open.picks.filter((p) => p.round === r);
+      if (inRound.length) rounds.push({ r, picks: inRound });
+    }
+    const mine = open.picks.filter((p) => p.gmIdx === open.userSlot);
+    return (
+      <>
+        <div className="row sp" style={{ marginBottom: 11 }}>
+          <div style={{ minWidth: 0 }}>
+            <div className="eyebrow">{new Date(open.at).toLocaleDateString()} · {open.scoringLabel}</div>
+            <h2 style={{ fontSize: 22, marginTop: 3 }}>{open.name}</h2>
+          </div>
+          <button className="chip" onClick={() => setOpen(null)}>Back</button>
+        </div>
+
+        <div className="grid3" style={{ marginBottom: 11 }}>
+          <div className="stat"><b className="num">{open.teams}</b><span className="eyebrow">teams</span></div>
+          <div className="stat"><b className="num">{open.rounds}</b><span className="eyebrow">rounds</span></div>
+          <div className="stat"><b className="num">{open.userSlot + 1}</b><span className="eyebrow">your slot</span></div>
+        </div>
+
+        <div className="row" style={{ gap: 7, marginBottom: 11 }}>
+          <button className={`chip ${mineOnly ? "on" : ""}`} onClick={() => setMineOnly(true)}>My picks ({mine.length})</button>
+          <button className={`chip ${!mineOnly ? "on" : ""}`} onClick={() => setMineOnly(false)}>Full board</button>
+        </div>
+
+        {rounds.map(({ r, picks }) => {
+          const shown = mineOnly ? picks.filter((p) => p.gmIdx === open.userSlot) : picks;
+          if (!shown.length) return null;
+          return (
+            <div key={r} className="card tight">
+              <div className="eyebrow" style={{ padding: "11px 12px 7px" }}>Round {r}</div>
+              {shown.map((p) => {
+                const isUser = p.gmIdx === open.userSlot;
+                const edge = p.overall - p.adp;
+                return (
+                  <div key={p.overall} className="plr" style={{ background: isUser ? "rgba(255,212,0,.09)" : undefined }}>
+                    <div className="disp num" style={{ width: 34, fontSize: 12, color: "var(--mute)", flex: "none" }}>
+                      {r}.{String(p.slot).padStart(2, "0")}
+                    </div>
+                    <div className={POSC(p.pos)}>{p.pos === "DST" ? "DEF" : p.pos}</div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div className="nm" style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</div>
+                      <div className="sub">{p.team}{isUser ? " · you" : ` · ${open.gms.find((g) => g.idx === p.gmIdx)?.name || ""}`}</div>
+                    </div>
+                    {p.adp > 0 && (
+                      <div style={{ textAlign: "right" }}>
+                        <div className="num" style={{ fontSize: 11.5, color: edge > 12 ? "var(--green)" : edge < -12 ? "var(--red)" : "var(--mute)" }}>
+                          {edge > 0 ? `+${edge}` : edge}
+                        </div>
+                        <div className="sub">vs ADP</div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })}
+      </>
+    );
+  }
+
+  return (
+    <>
+      <div className="row sp" style={{ marginBottom: 11 }}>
+        <div>
+          <div className="eyebrow">Saved automatically</div>
+          <h2 style={{ fontSize: 22, marginTop: 3 }}>Past draft boards</h2>
+        </div>
+        <button className="chip" onClick={onBack}>Back</button>
+      </div>
+
+      {list === null && <div className="card"><div className="mini">Loading…</div></div>}
+      {list?.length === 0 && (
+        <div className="card"><div className="mini">
+          No boards yet. Finish a mock draft and it gets archived here automatically, round by round.
+        </div></div>
+      )}
+      {list?.map((m) => (
+        <div key={m.id} className="card">
+          <div className="row sp">
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div className="nm">{m.name}</div>
+              <div className="sub">{new Date(m.at).toLocaleDateString()} · {m.teams} teams · {m.rounds} rounds · {m.scoringLabel}</div>
+            </div>
+            <button className="chip on" onClick={() => load(m.id)}>Open</button>
+            <button className="chip" onClick={() => remove(m.id)}>Delete</button>
+          </div>
+        </div>
+      ))}
+    </>
+  );
+}
+
+/* ---- scoring editor: presets plus every individual rule ---- */
+
+function ScoringEditor({ scoring, onChange, title }) {
+  const sc = resolveScoring(scoring);
+  const set = (k, v) => onChange({ ...sc, [k]: v });
+  const activePreset = SCORING_PRESETS.find((p) =>
+    Object.entries(p.patch).every(([k, v]) => Math.abs((sc[k] ?? 0) - v) < 0.001));
+
+  const Field = ({ k, label, hint, step = 0.5, min = -10, max = 20 }) => (
+    <div style={{ marginBottom: 10 }}>
+      <div className="row sp" style={{ marginBottom: 4 }}>
+        <div className="mini" style={{ color: "var(--chalk)" }}>{label}</div>
+        <div className="num" style={{ fontWeight: 700, color: "var(--first)" }}>{sc[k]}</div>
+      </div>
+      <div className="row" style={{ gap: 7 }}>
+        <button className="chip" onClick={() => set(k, Math.round((sc[k] - step) * 1000) / 1000)} disabled={sc[k] <= min}>−</button>
+        <div className="bar" style={{ flex: 1 }}>
+          <i style={{ width: `${Math.max(0, Math.min(100, ((sc[k] - min) / (max - min)) * 100))}%` }} />
+        </div>
+        <button className="chip" onClick={() => set(k, Math.round((sc[k] + step) * 1000) / 1000)} disabled={sc[k] >= max}>+</button>
+      </div>
+      {hint && <div className="mini" style={{ marginTop: 3, fontSize: 10.5 }}>{hint}</div>}
+    </div>
+  );
+
+  return (
+    <>
+      <div className="card">
+        <div className="eyebrow">{title || "Scoring"}</div>
+        <div className="mini" style={{ margin: "6px 0 10px" }}>
+          Projections rebuild from these rules, so changing them changes rankings, draft value and trade math.
+        </div>
+        <div className="scroll-x">
+          {SCORING_PRESETS.map((p) => (
+            <button key={p.key} className={`chip ${activePreset?.key === p.key ? "on" : ""}`}
+              onClick={() => onChange({ ...sc, ...p.patch })}>{p.label}</button>
+          ))}
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="eyebrow" style={{ marginBottom: 9 }}>Receiving and rushing</div>
+        <Field k="rec" label="Per reception" step={0.25} min={0} max={2} hint="0 is standard, 1 is full PPR" />
+        <Field k="tePremium" label="Tight end bonus per catch" step={0.25} min={0} max={2} hint="Added on top of the reception value, tight ends only" />
+        <Field k="recYd" label="Per receiving yard" step={0.05} min={0} max={0.5} hint={`${(1 / (sc.recYd || 1)).toFixed(0)} yards per point`} />
+        <Field k="rushYd" label="Per rushing yard" step={0.05} min={0} max={0.5} />
+        <Field k="recTD" label="Receiving touchdown" step={1} min={0} max={12} />
+        <Field k="rushTD" label="Rushing touchdown" step={1} min={0} max={12} />
+        <Field k="bonus100" label="100 yard game bonus" step={1} min={0} max={10} hint="Rushing or receiving" />
+      </div>
+
+      <div className="card">
+        <div className="eyebrow" style={{ marginBottom: 9 }}>Passing and turnovers</div>
+        <Field k="passYd" label="Per passing yard" step={0.01} min={0} max={0.2} hint={`${(1 / (sc.passYd || 1)).toFixed(0)} yards per point`} />
+        <Field k="passTD" label="Passing touchdown" step={1} min={0} max={10} hint="4 is standard, 6 makes quarterbacks far more valuable" />
+        <Field k="int" label="Interception" step={1} min={-6} max={0} />
+        <Field k="fumble" label="Fumble lost" step={1} min={-6} max={0} />
+      </div>
+
+      <div className="card">
+        <div className="eyebrow" style={{ marginBottom: 9 }}>Kicker and defense</div>
+        <Field k="kMult" label="Kicker scoring" step={0.1} min={0} max={2.5} hint="A multiplier on kicker output" />
+        <Field k="dstMult" label="Defense scoring" step={0.1} min={0} max={2.5} />
+      </div>
+
+      <ScoringImpact scoring={sc} />
+    </>
+  );
+}
+
+// shows who this ruleset actually favors
+function ScoringImpact({ scoring }) {
+  const rows = useMemo(() => {
+    const skill = PLAYERS.filter((p) => !["K", "DST"].includes(p.pos));
+    const now = skill.map((p) => ({ p, v: projectPoints(p, scoring) })).sort((a, b) => b.v - a.v);
+    const basePPR = skill.map((p) => ({ p, v: projectPoints(p, DEFAULT_SCORING) })).sort((a, b) => b.v - a.v);
+    const baseRank = new Map(basePPR.map((r, i) => [r.p.id, i]));
+    return now.slice(0, 60).map((r, i) => ({ ...r, move: (baseRank.get(r.p.id) ?? i) - i })).sort((a, b) => b.move - a.move);
+  }, [JSON.stringify(scoring)]);
+  const up = rows.filter((r) => r.move > 2).slice(0, 4);
+  const down = rows.filter((r) => r.move < -2).slice(-4).reverse();
+  if (!up.length && !down.length) {
+    return <div className="card"><div className="mini">These rules match standard full PPR, so nobody moves in the rankings.</div></div>;
+  }
+  return (
+    <div className="card fdl" style={{ paddingLeft: 15 }}>
+      <div className="eyebrow" style={{ marginBottom: 8 }}>Who this favors</div>
+      {up.map((r) => (
+        <div key={r.p.id} className="row sp" style={{ padding: "3px 0" }}>
+          <div className="mini" style={{ color: "var(--chalk)" }}>{r.p.name} <span style={{ color: "var(--mute)" }}>{r.p.pos}</span></div>
+          <div className="num" style={{ fontSize: 12, color: "var(--green)" }}>up {r.move}</div>
+        </div>
+      ))}
+      {down.map((r) => (
+        <div key={r.p.id} className="row sp" style={{ padding: "3px 0" }}>
+          <div className="mini" style={{ color: "var(--chalk)" }}>{r.p.name} <span style={{ color: "var(--mute)" }}>{r.p.pos}</span></div>
+          <div className="num" style={{ fontSize: 12, color: "var(--red)" }}>down {Math.abs(r.move)}</div>
+        </div>
+      ))}
+      <div className="mini" style={{ marginTop: 7 }}>Movement is against standard full PPR, top 60 overall.</div>
     </div>
   );
 }
@@ -3491,6 +4554,8 @@ export default function App() {
   const [tab, setTab] = useState("draft");
   const [toastMsg, setToastMsg] = useState("");
   const [my, saveMy, myReady] = useMyTeam();
+  const [cardId, setCardId] = useState(null);
+  const kbInset = useKeyboardInset();
   const [pwa, setPwa] = useState(false);
   const saveTimer = useRef(null);
   const [recoveryReady, setRecoveryReady] = useState(false);
@@ -3503,6 +4568,7 @@ export default function App() {
       if (active?.leagueId) {
         const savedLeague = await store.get(`huddle:lg:${active.leagueId}`);
         if (savedLeague && alive) {
+          ensureSchedule(savedLeague);   // restored sessions too
           setScreen("mock");
           setLg(savedLeague);
           setTab(active.tab || (draftDone(savedLeague) ? (savedLeague.season ? "season" : "team") : "draft"));
@@ -3540,7 +4606,11 @@ export default function App() {
     if (lg?.id && screen === "mock") recoverySet(RECOVERY_ACTIVE, { leagueId: lg.id, tab, at: Date.now() });
   }, [lg?.id, tab, screen]);
 
-  const openLeague = (l) => { setLg(l); setTab(draftDone(l) ? (l.season ? "season" : "team") : "draft"); };
+  const openLeague = (l) => {
+    ensureSchedule(l);   // older saves get a schedule written in on open
+    setLg(l);
+    setTab(draftDone(l) ? (l.season ? "season" : "team") : "draft");
+  };
   const closeLeague = async () => {
     if (lg) await saveLeague(lg);
     recoveryDel(RECOVERY_ACTIVE);
@@ -3574,7 +4644,11 @@ export default function App() {
     setScreen(k);
   };
 
+  // any player name in the app can open the detail card
+  const cardLg = lg || shellLeague(my);
+
   return (
+    <PlayerCtx.Provider value={setCardId}>
     <div className={`hd${pwa ? " pwa" : ""}`} style={{ "--nudge": `${my.topPad || 0}px` }}>
       <style>{CSS}</style>
 
@@ -3590,8 +4664,7 @@ export default function App() {
               </div>
               <div className="sub">
                 {lg
-                  ? (lg.season ? (lg.season.champion != null ? "Season complete" : `Week ${lg.season.week}`)
-                    : draftDone(lg) ? "Draft complete" : `Pick ${lg.picks.length + 1} of ${lg.order.length}`)
+                  ? `${lg.settings.teams} teams · ${lg.season ? (lg.season.champion != null ? "season complete" : `week ${lg.season.week}`) : draftDone(lg) ? "drafted" : `pick ${lg.picks.length + 1} of ${lg.order.length}`}`
                   : screen === "mock" ? "Simulated league" : screen === "settings" ? `Huddle ${VERSION}` : "Your real league"}
               </div>
             </div>
@@ -3602,8 +4675,9 @@ export default function App() {
               {MOCK_TABS.map(([k, l]) => {
                 const alert = k === "season" && lg.season?.tradeOffer;
                 return (
-                  <button key={k} className={`snb ${tab === k ? "on" : ""}`} onClick={() => setTab(k)}>
-                    {l}{alert ? <span className="badge">1</span> : null}
+                  <button key={k} className={`snb ${tab === k ? "on" : ""}`} onClick={() => setTab(k)}
+                    aria-label={alert ? `${l}, needs attention` : l}>
+                    {l}{alert ? <span className="badge" aria-hidden="true">1</span> : null}
                   </button>
                 );
               })}
@@ -3611,7 +4685,7 @@ export default function App() {
           )}
 
           <div>
-            {screen === "mock" && !lg && <MockHome onOpen={openLeague} onCreate={(l) => { setLg(l); setTab("draft"); }} />}
+            {screen === "mock" && !lg && <MockHome onOpen={openLeague} onCreate={(l) => { setLg(l); setTab("draft"); }} customScoring={my.scoring ?? my.ppr} />}
             {screen === "mock" && lg && (
               <>
                 {tab === "draft" && <DraftRoom lg={lg} setLg={setLg} toast={toast} />}
@@ -3629,7 +4703,7 @@ export default function App() {
         </>
       )}
 
-      <div className="tabs">
+      <div className="tabs" style={kbInset ? { display: "none" } : undefined}>
         {TABS.map(([k, l]) => {
           const on = screen === k;
           const alert = k === "mock" && lg?.season?.tradeOffer ? 1 : 0;
@@ -3637,7 +4711,7 @@ export default function App() {
             <button key={k} className={`tab ${on ? "on" : ""}`} onClick={() => goTab(k)}>
               <span style={{ position: "relative" }}>
                 <span className="dot" />
-                {alert ? <span className="badge">1</span> : null}
+                {alert ? <span className="badge" aria-hidden="true">1</span> : null}
               </span>
               {l}
             </button>
@@ -3645,7 +4719,9 @@ export default function App() {
         })}
       </div>
 
+      {cardId != null && <PlayerCardSheet id={cardId} lg={cardLg} onClose={() => setCardId(null)} />}
       <Toast msg={toastMsg} />
     </div>
+    </PlayerCtx.Provider>
   );
 }

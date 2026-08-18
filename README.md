@@ -108,6 +108,19 @@ instead of being decoration.
 
 ---
 
+## Verifying a change
+
+```bash
+npm test
+```
+
+Renders every screen and exercises the engine: scoring, drafting, the season
+simulation, waivers, trades and the schedule. Compiling is not enough, because
+an undefined variable inside a component only surfaces when it renders. Run this
+after any edit.
+
+---
+
 ## Optional: Claude-powered features
 
 Two features need a connection: screenshot roster reading and the Second opinion
@@ -150,6 +163,7 @@ main.jsx                entry point
 App.jsx                 data, engine, and UI
 storage.js              localStorage-backed persistence shim
 anthropic.js            routes Claude calls (key or proxy)
+SMOKE_TEST.mjs          renders every screen, checks the engine
 manifest.webmanifest    home-screen install
 icon.svg
 package.json
@@ -157,8 +171,10 @@ vite.config.js
 .env.example
 ```
 
-`App.jsx` is organized top to bottom: player data and projection curves, then CPU
-drafting and valuation, then the season engine, then UI components, then the app shell.
+`App.jsx` opens with a numbered map of its own sections, from the player pool and
+scoring rules through CPU drafting, the schedule, valuation, the season engine,
+and finally the screens and app shell. Search for `===== 6. VALUATION =====` and
+similar banners to jump between them.
 
 ---
 
