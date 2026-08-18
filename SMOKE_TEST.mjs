@@ -186,6 +186,28 @@ check("older saves recover a schedule", () => {
   return legacy.season.nfl?.length === 18 ? null : "schedule was not rebuilt";
 });
 
+check("lineup swaps persist before the season starts", () => {
+  const pre = M.makeLeague({ teams: 12, rounds: 15, superflex: false, userSlot: 5, ppr: 1 });
+  while (!M.draftDone(pre)) {
+    const onClock = M.onClock(pre);
+    const taken = new Set(pre.picks.map((p) => p.playerId));
+    M.makePick(pre, M.aiPick(pre, onClock, M.PLAYERS.filter((p) => !taken.has(p.id))).id);
+  }
+  const vals = M.buildValues(pre, null);
+  const starters = M.optimalLineup(pre, { injuries: {} }, pre.rosters[5], 1, vals);
+  const bench = pre.rosters[5].filter((id) => !starters.includes(id));
+  if (!bench.length) return "no bench to swap from";
+
+  // simulate the swap the sheet performs, then kick off
+  const next = starters.slice();
+  next[1] = bench[0];
+  pre.preseasonLineup = next;
+  const season = M.startSeason(pre);
+  if (pre.preseasonLineup) season.lineups[1] = pre.preseasonLineup;
+  if (season.lineups[1][1] !== bench[0]) return "swap did not carry into week 1";
+  return null;
+});
+
 console.log("\nScreens");
 
 const noop = () => {};

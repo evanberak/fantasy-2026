@@ -2197,13 +2197,17 @@ function TeamView({ lg, setLg, toast }) {
   const values = useMemo(() => buildValues(lg, season), [lg, season && season.week, ids.length]);
   const [swap, setSwap] = useState(null);
 
-  const stored = season?.lineups?.[week];
-  const lineup = stored || (season ? optimalLineup(lg, season, ids, week, values) : defaultLineup(lg, ids, values));
+  /* Before kickoff there is no season object to hold lineups, so the preseason
+     starting eleven lives on the league and is carried into week 1 when the
+     season begins. Either way, editing works. */
+  const stored = season ? season.lineups?.[week] : lg.preseasonLineup;
+  const lineup = stored
+    || (season ? optimalLineup(lg, season, ids, week, values) : defaultLineup(lg, ids, values));
+
   const setLineup = (next) => {
-    if (!season) { toast("Start the season to lock lineups"); return; }
     setLg((prev) => {
-      const s = { ...prev.season, lineups: { ...prev.season.lineups, [week]: next } };
-      return { ...prev, season: s };
+      if (!prev.season) return { ...prev, preseasonLineup: next };
+      return { ...prev, season: { ...prev.season, lineups: { ...prev.season.lineups, [week]: next } } };
     });
   };
 
@@ -2225,18 +2229,19 @@ function TeamView({ lg, setLg, toast }) {
         </div>
       </div>
 
-      {season && (
-        <button className="btn alt" style={{ marginBottom: 11 }}
-          onClick={() => { setLineup(optimalLineup(lg, season, ids, week, values)); toast("Lineup optimized"); }}>
-          Optimize lineup
-        </button>
-      )}
+      <button className="btn alt" style={{ marginBottom: 11 }}
+        onClick={() => {
+          setLineup(season ? optimalLineup(lg, season, ids, week, values) : defaultLineup(lg, ids, values));
+          toast("Lineup optimized");
+        }}>
+        Optimize lineup
+      </button>
 
       <div className="card tight">
         {slots.map((s, i) => {
           const id = lineup[i];
           const p = id ? BY_ID[id] : null;
-          const bad = p && (p.bye === week || (season?.injuries[p.id] > 0));
+          const bad = p && season && (p.bye === week || season.injuries[p.id] > 0);
           return (
             <div key={i} className="plr" onClick={() => setSwap({ i, accepts: s.accepts })} style={{ cursor: "pointer" }}>
               <div className="disp" style={{ width: 42, fontSize: 13, color: "var(--mute)", flex: "none" }}>{s.slot}</div>
@@ -2405,7 +2410,12 @@ function SeasonView({ lg, setLg, toast, setTab }) {
             first-rounders bust. Injuries, FAAB waivers, and trade offers run all year.
             {s ? "" : ` ${lg.settings.teams >= 10 ? "14-week regular season, 6-team playoff." : "15-week regular season, 4-team playoff."}`}
           </div>
-          <button className="btn" onClick={() => setLg((p) => ({ ...p, season: startSeason(p) }))}>Kick off week 1</button>
+          <button className="btn" onClick={() => setLg((p) => {
+              const season = startSeason(p);
+              // keep whatever they set up before kickoff
+              if (p.preseasonLineup) season.lineups[1] = p.preseasonLineup;
+              return { ...p, season };
+            })}>Kick off week 1</button>
         </div>
       </div>
     );
@@ -3718,7 +3728,7 @@ function GMChat({ lg }) {
    with no mock league required. Saved separately from any league.
    ============================================================ */
 
-export const VERSION = "1.8.0";
+export const VERSION = "1.8.1";
 const MY_KEY = "huddle:myteam";
 
 const DEFAULT_MY = { ids: [], teams: 12, ppr: 1, superflex: false, name: "My Team", topPad: 0 };
