@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import { loadInjuries, INJURY_LEVELS, isStale, CACHE_KEY as INJURY_CACHE_KEY } from "./sleeper.js";
 
 /* ============================================================
    HUDDLE, a 2026 fantasy football command center
@@ -528,14 +529,33 @@ export const GM_NAMES = [
 
 // drafting personalities give each AI room a different feel
 export const PERSONAS = [
-  { key: "value", label: "Best available", reach: 2.5, needW: 0.35, posBias: {} },
-  { key: "needy", label: "Roster builder", reach: 4.5, needW: 1.15, posBias: {} },
-  { key: "zeroRB", label: "Zero RB", reach: 5.0, needW: 0.6, posBias: { WR: -10, TE: -5, RB: 14 } },
-  { key: "heroRB", label: "Hero RB", reach: 5.0, needW: 0.6, posBias: { RB: -11, WR: 6 } },
-  { key: "lateQB", label: "Late-round QB", reach: 3.5, needW: 0.7, posBias: { QB: 22, TE: -4 } },
-  { key: "homer", label: "Reacher", reach: 9.0, needW: 0.8, posBias: {} },
-  { key: "sharp", label: "Analytics", reach: 3.0, needW: 0.55, posBias: { K: 30, DST: 22 } },
+  { key: "value", label: "Best available", reach: 2.5, needW: 0.35, posBias: {},
+    blurb: "Takes the highest player on the board and sorts out roster holes later." },
+  { key: "needy", label: "Roster builder", reach: 4.5, needW: 1.15, posBias: {},
+    blurb: "Fills starting slots in order. Rarely takes a third back before a first tight end." },
+  { key: "zeroRB", label: "Zero RB", reach: 5.0, needW: 0.6, posBias: { WR: -10, TE: -5, RB: 14 },
+    rules: { noRBBefore: 5 },
+    blurb: "Loads up on receivers early and waits until the middle rounds for backs." },
+  { key: "heroRB", label: "Hero RB", reach: 5.0, needW: 0.6, posBias: { RB: -11, WR: 6 },
+    rules: { rbCap: 1, rbCapUntil: 7 },
+    blurb: "Takes one anchor back early, then ignores the position for a long stretch." },
+  { key: "lateQB", label: "Late-round QB", reach: 3.5, needW: 0.7, posBias: { QB: 22, TE: -4 },
+    rules: { noQBBefore: 8 },
+    blurb: "Refuses to pay for a quarterback and streams from the back of the pack." },
+  { key: "eliteTE", label: "Elite TE", reach: 4.0, needW: 0.7, posBias: { TE: -14, WR: 4 },
+    rules: { mustTEBy: 4 },
+    blurb: "Pays up for a top tight end to win the position every week." },
+  { key: "homer", label: "Reacher", reach: 9.0, needW: 0.8, posBias: {},
+    blurb: "Falls in love with guys and takes them a round or two early. Every league has one." },
+  { key: "sharp", label: "Analytics", reach: 3.0, needW: 0.55, posBias: { K: 30, DST: 22 },
+    blurb: "Values discipline, waits on kicker and defense until the very last picks." },
+  { key: "upside", label: "Upside hunter", reach: 6.0, needW: 0.5, posBias: {}, riskLove: 1.8,
+    blurb: "Chases ceiling over floor, especially with young players in the later rounds." },
+  { key: "safe", label: "Floor merchant", reach: 3.0, needW: 0.8, posBias: {}, riskLove: -1.4,
+    blurb: "Wants proven, stable roles. Avoids volatile players even at a discount." },
 ];
+
+export const personaByKey = (key) => PERSONAS.find((p) => p.key === key) || PERSONAS[0];
 
 export const uid = () => Math.random().toString(36).slice(2, 10);
 
@@ -570,7 +590,7 @@ export function makeLeague(cfg) {
       idx: i,
       name: isUser ? teamName || "My Team" : pool[i % pool.length],
       isUser,
-      persona: isUser ? null : PERSONAS[Math.floor(Math.random() * PERSONAS.length)].key,
+      persona: isUser ? null : (cfg.personas?.[i] || PERSONAS[Math.floor(Math.random() * PERSONAS.length)].key),
       traits: { qb2: Math.random() < 0.45, te2: Math.random() < 0.35 },
     });
   }
@@ -668,6 +688,19 @@ export function aiPick(lg, gmIdx, available) {
       if (!g.traits?.te2) return false;
       if (round < rounds - 4) return false;
     }
+    /* Strategy commitments. A Zero RB manager who takes a back in round one
+       is not running Zero RB, so these are hard gates rather than nudges.
+       They relax late so nobody finishes with an illegal roster. */
+    const R = P.rules || {};
+    const roomToSpare = left > 5;
+    if (roomToSpare) {
+      if (p.pos === "RB" && R.noRBBefore && round < R.noRBBefore) return false;
+      if (p.pos === "RB" && R.rbCap != null && counts.RB >= R.rbCap && round < (R.rbCapUntil || 7)) return false;
+      if (p.pos === "QB" && R.noQBBefore && round < R.noQBBefore) return false;
+      // the elite tight end manager must actually land one
+      if (R.mustTEBy && counts.TE === 0 && round >= R.mustTEBy && p.pos !== "TE") return false;
+    }
+
     // don't take a 4th WR/3rd RB before you have a full starting lineup
     const startersMissing = ["RB", "WR", "TE"].some((x) => counts[x] < want[x]);
     if (startersMissing && counts[p.pos] >= want[p.pos] + 1 && round <= 7) return false;
@@ -713,6 +746,16 @@ export function aiPick(lg, gmIdx, available) {
     expectedNext[pos] = acc + (tail ? proj(tail, ppr) * goneProb : 0);
   }
 
+  /* Positional runs. When four of the last eight picks were backs, the board
+     is thinning fast and waiting costs more than the raw dropoff suggests.
+     Real rooms react to this, so the CPU does too. */
+  const recent = lg.picks.slice(-8).map((pk) => BY_ID[pk.playerId].pos);
+  const runHeat = {};
+  for (const posName of POS_ORDER) {
+    const n = recent.filter((x) => x === posName).length;
+    runHeat[posName] = n >= 4 ? 1.35 : n === 3 ? 1.18 : 1;
+  }
+
   let best = null, bestScore = -Infinity;
   for (const p of pool.slice(0, 45)) {
     const pts = proj(p, ppr);
@@ -731,16 +774,24 @@ export function aiPick(lg, gmIdx, available) {
     // 4. don't reach into next week. ADP discipline, loosened late
     const reachPenalty = Math.max(0, p.adp - overall - 6 - round * 1.5) * (1.6 / (1 + round * 0.12));
     // 5. bye-week hygiene
+    // stacking byes only really hurts among starters, so weight by pick quality
     const byeClash = ids.filter((id) => BY_ID[id].bye === p.bye).length;
-    const byePenalty = byeClash >= 3 ? 9 : byeClash >= 2 ? 3 : 0;
+    const early = round <= 7 ? 1.5 : 1;
+    const byePenalty = (byeClash >= 4 ? 14 : byeClash >= 3 ? 9 : byeClash >= 2 ? 3 : 0) * early;
     // 6. late-round upside chase. swing on variance when it's free
     const upside = round > rounds * 0.62 ? p.spread * 34 : 0;
 
     const persona = -(P.posBias[p.pos] || 0) * 2.1;
     const noise = (Math.random() - 0.5) * 2 * P.reach * 3.2;
 
-    const score = (pts * 0.42 + dropoff * 1.5 + tier * 0.9) * roleWeight
-      - reachPenalty - byePenalty + upside + persona + noise;
+    /* Handcuff logic: a backup on the same team as a back you already roster
+       is worth a late flier, but never worth a real pick. */
+    const stacksMyBack = p.pos === "RB" && counts.RB >= 2
+      && ids.some((id) => BY_ID[id].pos === "RB" && BY_ID[id].team === p.team);
+    const handcuff = stacksMyBack ? (round > rounds * 0.7 ? 4 : -9) : 0;
+
+    const score = (pts * 0.42 + dropoff * 1.5 * runHeat[p.pos] + tier * 0.9) * roleWeight
+      - reachPenalty - byePenalty + upside + persona + handcuff + noise;
 
     if (score > bestScore) { bestScore = score; best = p; }
   }
@@ -868,6 +919,53 @@ export function ensureSchedule(lg) {
   return false;
 }
 
+/* ===== 5b. LIVE INJURIES =====
+   Real injury data from Sleeper, matched onto our player pool.
+
+   Scope matters here. A mock season runs its own simulated injuries, because
+   the whole point is that it plays out differently each time. Real injuries
+   therefore apply to preseason rankings and to the real-team tools, and never
+   overwrite a simulation already in progress. */
+
+let LIVE_INJURIES = null;      // { [playerId]: record }
+let LIVE_META = null;          // { fetchedAt, matched, unmatched }
+
+export function setLiveInjuries(byId, meta) {
+  LIVE_INJURIES = byId && Object.keys(byId).length ? byId : null;
+  LIVE_META = meta || null;
+}
+export function getLiveInjuries() { return LIVE_INJURIES; }
+export function getLiveMeta() { return LIVE_META; }
+export function injuryFor(playerId) { return LIVE_INJURIES ? LIVE_INJURIES[playerId] || null : null; }
+
+/* Match Sleeper records onto our pool by normalized name, using team and
+   position to break ties between players who share a name. */
+export function matchInjuries(list) {
+  const byId = {};
+  let unmatched = 0;
+  const index = new Map();
+  for (const p of PLAYERS) {
+    const key = norm(p.name);
+    if (!index.has(key)) index.set(key, []);
+    index.get(key).push(p);
+  }
+  for (const rec of list || []) {
+    const candidates = index.get(norm(rec.name)) || [];
+    let hit = null;
+    if (candidates.length === 1) hit = candidates[0];
+    else if (candidates.length > 1) {
+      hit = candidates.find((p) => p.team === rec.team && p.pos === rec.pos)
+        || candidates.find((p) => p.pos === rec.pos)
+        || candidates[0];
+    }
+    if (!hit) { unmatched++; continue; }
+    const level = INJURY_LEVELS[rec.status];
+    if (!level) { unmatched++; continue; }
+    byId[hit.id] = { ...rec, ...level };
+  }
+  return { byId, matched: Object.keys(byId).length, unmatched };
+}
+
 /* ===== 6. VALUATION ===== */
 
 // remaining-season points estimate for every player, given season state
@@ -901,13 +999,18 @@ export function buildValues(lg, state) {
     } else {
       weighted = 17 * 1.05;
     }
+    /* Live injuries only bite outside a running simulation. Inside one, the
+       season's own injury rolls are the source of truth. */
+    const live = state ? null : injuryFor(p.id);
+    const liveFactor = live ? live.factor : 1;
     out[p.id] = {
-      ppg: perWeek * mult,
-      ros: perWeek * mult * playable,
-      rosWeighted: perWeek * mult * weighted,
+      ppg: perWeek * mult * liveFactor,
+      ros: perWeek * mult * playable * liveFactor,
+      rosWeighted: perWeek * mult * weighted * liveFactor,
       weeksCounted: weighted,
       mult,
       out: inj,
+      live,
     };
   }
   // replacement level per position from ROS ppg
@@ -1383,16 +1486,16 @@ const CSS = `
   --chalk:#E9EEF2; --mute:#8B9BA8; --first:#FFD400; --los:#3B7BFF;
   --red:#E2483A; --green:#22C48A;
   background:var(--ink); color:var(--chalk); font-family:Inter,system-ui,sans-serif;
-  min-height:100vh; -webkit-font-smoothing:antialiased; font-size:14px; }
+  min-height:100vh; -webkit-font-smoothing:antialiased; font-size:15.5px; }
 .hd *{box-sizing:border-box}
 .hd button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
 .hd input,.hd select,.hd textarea{font-family:inherit;background:var(--panel2);border:1px solid var(--line);
-  color:var(--chalk);border-radius:6px;padding:9px 10px;width:100%;font-size:14px;outline:none}
+  color:var(--chalk);border-radius:6px;padding:11px 12px;width:100%;font-size:16px;outline:none}
 .hd input:focus,.hd select:focus,.hd textarea:focus{border-color:var(--los)}
 .hd h1,.hd h2,.hd h3,.hd .disp{font-family:'Barlow Condensed',Impact,sans-serif;font-weight:700;
   text-transform:uppercase;letter-spacing:.02em;margin:0;line-height:1}
 .num{font-family:'JetBrains Mono',monospace;font-variant-numeric:tabular-nums}
-.eyebrow{font-size:10px;letter-spacing:.16em;text-transform:uppercase;color:var(--mute);font-weight:600}
+.eyebrow{font-size:11px;letter-spacing:.15em;text-transform:uppercase;color:var(--mute);font-weight:600}
 /* signature: the first-down line */
 .fdl{position:relative}
 .fdl::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--first)}
@@ -1407,17 +1510,17 @@ const CSS = `
 .subnav{position:sticky;top:0;z-index:25;display:grid;grid-template-columns:repeat(5,1fr);gap:3px;
   padding:8px 10px;background:rgba(12,17,22,.97);backdrop-filter:blur(8px);
   border-bottom:1px solid var(--line)}
-.snb{padding:8px 2px;border-radius:8px;background:transparent;border:none;white-space:nowrap;
-  font-size:11.5px;font-weight:700;color:var(--mute);font-family:'Barlow Condensed',sans-serif;
+.snb{padding:9px 2px;border-radius:8px;background:transparent;border:none;white-space:nowrap;
+  font-size:13px;font-weight:700;color:var(--mute);font-family:'Barlow Condensed',sans-serif;
   text-transform:uppercase;letter-spacing:.06em;position:relative;text-align:center}
 .snb.on{background:var(--first);color:#101519}
 /* secondary nav within the season screen */
 .segs{display:grid;grid-auto-flow:column;gap:3px;background:var(--panel2);border:1px solid var(--line);
   border-radius:10px;padding:3px;margin-bottom:12px}
-.seg{padding:8px 2px;border-radius:7px;font-size:11px;font-weight:700;color:var(--mute);text-align:center;
+.seg{padding:9px 2px;border-radius:7px;font-size:12.5px;font-weight:700;color:var(--mute);text-align:center;
   font-family:'Barlow Condensed',sans-serif;text-transform:uppercase;letter-spacing:.05em;position:relative}
 .seg.on{background:var(--first);color:#101519}
-.tab{padding:9px 2px 8px;text-align:center;font-size:11px;letter-spacing:.05em;text-transform:uppercase;
+.tab{padding:9px 2px 8px;text-align:center;font-size:12.5px;letter-spacing:.05em;text-transform:uppercase;
   color:var(--mute);font-weight:700;border-radius:10px;display:flex;flex-direction:column;align-items:center;gap:4px;
   font-family:'Barlow Condensed',sans-serif;line-height:1}
 .tab .dot{width:20px;height:20px;border-radius:6px;background:var(--line);display:block;position:relative}
@@ -1436,27 +1539,27 @@ const CSS = `
 .hd.pwa{--safe-bot:max(env(safe-area-inset-bottom,0px),16px)}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:13px;margin-bottom:11px}
 .card.tight{padding:0;overflow:hidden}
-.btn{background:var(--first);color:#101519;font-weight:700;padding:11px 14px;border-radius:7px;
-  font-family:'Barlow Condensed',sans-serif;text-transform:uppercase;letter-spacing:.06em;font-size:16px;width:100%}
+.btn{background:var(--first);color:#101519;font-weight:700;padding:13px 16px;border-radius:8px;
+  font-family:'Barlow Condensed',sans-serif;text-transform:uppercase;letter-spacing:.06em;font-size:19px;width:100%}
 .btn:disabled{opacity:.35}
 .btn.alt{background:var(--panel2);color:var(--chalk);border:1px solid var(--line)}
 .btn.blue{background:var(--los);color:#fff}
-.btn.sm{padding:7px 10px;font-size:13px;width:auto}
+.btn.sm{padding:9px 13px;font-size:15px;width:auto}
 .row{display:flex;align-items:center;gap:9px}
 .sp{justify-content:space-between}
-.chip{padding:5px 9px;border-radius:99px;background:var(--panel2);border:1px solid var(--line);
-  font-size:11px;font-weight:600;letter-spacing:.04em;white-space:nowrap;color:var(--mute)}
+.chip{padding:7px 12px;border-radius:99px;background:var(--panel2);border:1px solid var(--line);
+  font-size:12.5px;font-weight:600;letter-spacing:.04em;white-space:nowrap;color:var(--mute)}
 .chip.on{background:var(--first);color:#101519;border-color:var(--first)}
 .scroll-x{display:flex;gap:6px;overflow-x:auto;padding-bottom:4px;-webkit-overflow-scrolling:touch}
 .scroll-x::-webkit-scrollbar{display:none}
-.pos{width:30px;height:20px;border-radius:4px;display:grid;place-items:center;font-size:10px;font-weight:700;
+.pos{width:34px;height:23px;border-radius:5px;display:grid;place-items:center;font-size:11.5px;font-weight:700;
   font-family:'Barlow Condensed',sans-serif;letter-spacing:.05em;flex:none}
 .pQB{background:#7A4DD6;color:#fff}.pRB{background:#1E9E6A;color:#fff}.pWR{background:#2F6BFF;color:#fff}
 .pTE{background:#D2822B;color:#fff}.pK{background:#4B5A68;color:#fff}.pDST{background:#8A5C2E;color:#fff}
-.plr{display:flex;align-items:center;gap:9px;padding:9px 11px;border-bottom:1px solid var(--line)}
+.plr{display:flex;align-items:center;gap:10px;padding:12px 12px;border-bottom:1px solid var(--line)}
 .plr:last-child{border-bottom:none}
-.nm{font-weight:600;font-size:13.5px;line-height:1.25}
-.sub{font-size:11px;color:var(--mute);margin-top:2px}
+.nm{font-weight:600;font-size:15.5px;line-height:1.3}
+.sub{font-size:12.5px;color:var(--mute);margin-top:3px}
 .divider{height:1px;background:var(--line);margin:11px 0}
 .bar{height:5px;background:var(--panel2);border-radius:99px;overflow:hidden}
 .bar>i{display:block;height:100%;background:var(--first)}
@@ -1468,7 +1571,7 @@ const CSS = `
 .act .ico{width:38px;height:38px;border-radius:10px;background:var(--panel2);display:grid;place-items:center;flex:none;
   font-family:'Barlow Condensed',sans-serif;font-size:15px;font-weight:700;color:var(--first);letter-spacing:.02em}
 .act.b .ico{color:var(--los)} .act.g .ico{color:var(--green)} .act.r .ico{color:var(--red)}
-.act h4{font-family:'Barlow Condensed',sans-serif;font-size:18px;text-transform:uppercase;margin:0 0 2px;letter-spacing:.02em}
+.act h4{font-family:'Barlow Condensed',sans-serif;font-size:22px;text-transform:uppercase;margin:0 0 2px;letter-spacing:.02em}
 .act .arw{color:var(--mute);font-size:20px;flex:none}
 .rng{width:78px;flex:none;text-align:right}
 .rngbar{height:4px;background:var(--panel2);border-radius:99px;position:relative;margin:4px 0 3px;overflow:hidden}
@@ -1481,25 +1584,26 @@ const CSS = `
   font-size:10px;font-weight:700;margin-left:6px}
 .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
 .stat{background:var(--panel2);border-radius:8px;padding:9px;text-align:center}
-.stat b{display:block;font-family:'Barlow Condensed',sans-serif;font-size:24px;line-height:1;margin-bottom:3px}
+.stat b{display:block;font-family:'Barlow Condensed',sans-serif;font-size:29px;line-height:1;margin-bottom:4px}
 .sheet{position:fixed;inset:0;z-index:60;background:rgba(6,9,12,.7);display:flex;align-items:flex-end;
   transition:padding-bottom .18s ease-out}
 .sheet>div{background:var(--panel);width:100%;max-height:88vh;overflow-y:auto;border-radius:14px 14px 0 0;
   border-top:3px solid var(--first);padding:14px;-webkit-overflow-scrolling:touch;
   transition:max-height .18s ease-out}
-.tag{font-size:9.5px;font-weight:700;letter-spacing:.08em;padding:2px 5px;border-radius:3px;text-transform:uppercase}
+.tag{font-size:10.5px;font-weight:700;letter-spacing:.08em;padding:2px 5px;border-radius:3px;text-transform:uppercase}
 .t-out{background:rgba(226,72,58,.16);color:var(--red)}
 .t-bye{background:rgba(139,155,168,.16);color:var(--mute)}
 .t-up{background:rgba(34,196,138,.16);color:var(--green)}
+.t-warn{background:rgba(233,160,58,.18);color:#E9A03A}
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(80px + var(--safe-bot));z-index:80;background:var(--first);
   color:#101519;font-weight:700;padding:10px 16px;border-radius:99px;font-size:13px;max-width:90%}
-.mini{font-size:11.5px;color:var(--mute);line-height:1.5}
+.mini{font-size:13.5px;color:var(--mute);line-height:1.55}
 .hub{display:grid;grid-template-columns:1fr 1fr;gap:11px}
 .tile{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:15px 13px 14px;
   text-align:left;min-height:152px;display:flex;flex-direction:column;position:relative;overflow:hidden}
 .tile::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--first);opacity:.85}
 .tile.b::before{background:var(--los)} .tile.g::before{background:var(--green)} .tile.m::before{background:var(--mute)}
-.tile h3{font-size:20px;line-height:.95;margin-bottom:6px}
+.tile h3{font-size:25px;line-height:.95;margin-bottom:7px}
 .tile .mini{flex:1}
 .tile .go{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--first);margin-top:9px}
 .tile.b .go{color:var(--los)} .tile.g .go{color:var(--green)} .tile.m .go{color:var(--mute)}
@@ -1548,7 +1652,7 @@ function Sheet({ open, onClose, title, children }) {
         }}
       >
         <div className="row sp" style={{ marginBottom: 10 }}>
-          <h2 style={{ fontSize: 20 }}>{title}</h2>
+          <h2 style={{ fontSize: 24 }}>{title}</h2>
           <button className="chip" onClick={onClose}>Close</button>
         </div>
         {children}
@@ -1558,12 +1662,15 @@ function Sheet({ open, onClose, title, children }) {
 }
 
 function PlayerRow({ p, right, onClick, tag, sub }) {
+  // live injury badge, only when the row is not already showing a status
+  const live = tag ? null : injuryFor(p.id);
+  const shown = tag || (live ? { c: live.factor === 0 ? "t-out" : "t-warn", t: live.code } : null);
   return (
     <div className="plr" onClick={onClick} style={{ cursor: onClick ? "pointer" : "default" }}>
       <div className={POSC(p.pos)}>{p.pos === "DST" ? "DEF" : p.pos}</div>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div className="nm" style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-          <Tap id={p.id}>{p.name}</Tap> {tag && <span className={`tag ${tag.c}`} style={{ marginLeft: 4 }}>{tag.t}</span>}
+          <Tap id={p.id}>{p.name}</Tap> {shown && <span className={`tag ${shown.c}`} style={{ marginLeft: 4 }}>{shown.t}</span>}
         </div>
         <div className="sub">{sub ?? `${p.team} · Bye ${p.bye || "TBD"} · ADP ${p.adp}`}</div>
       </div>
@@ -1756,6 +1863,7 @@ function parseJSON(txt) {
    ============================================================ */
 
 function MockHome({ onOpen, onCreate, customScoring }) {
+  const [showPersonas, setShowPersonas] = useState(false);
   const [saved, setSaved] = useState([]);
   const [cfg, setCfg] = useState({
     teams: 12, rounds: 15, ppr: 1, superflex: false, userSlot: 5, teamName: "My Team", name: "",
@@ -1790,7 +1898,7 @@ function MockHome({ onOpen, onCreate, customScoring }) {
     <div className="wrap">
       <div style={{ padding: "2px 0 16px" }}>
         <div className="eyebrow">2026 season · consensus ADP through Aug 10</div>
-        <h1 style={{ fontSize: 34, marginTop: 5 }}>Mock Season</h1>
+        <h1 style={{ fontSize: 40, marginTop: 6 }}>Mock Season</h1>
         <div className="mini" style={{ marginTop: 7, maxWidth: 430 }}>
           Draft against seven distinct personalities, then play the year out. Injuries, breakouts,
           bidding wars, and a trade market that pushes back.
@@ -1817,7 +1925,7 @@ function MockHome({ onOpen, onCreate, customScoring }) {
       )}
 
       <div className="card">
-        <h2 style={{ fontSize: 22, marginBottom: 12 }}>New mock draft</h2>
+        <h2 style={{ fontSize: 30, marginBottom: 12 }}>New mock draft</h2>
         <div className="grid2" style={{ marginBottom: 9 }}>
           <div>
             <div className="eyebrow" style={{ marginBottom: 4 }}>Teams</div>
@@ -1888,11 +1996,103 @@ function MockHome({ onOpen, onCreate, customScoring }) {
             onChange={(e) => setCfg({ ...cfg, superflex: e.target.checked })} />
           <span style={{ fontSize: 13 }}>Superflex (QB/RB/WR/TE second flex)</span>
         </label>
+        <button className="act" style={{ marginBottom: 10 }} onClick={() => setShowPersonas(true)}>
+          <div className="ico">CPU</div>
+          <div style={{ flex: 1 }}>
+            <h4>Drafting personalities</h4>
+            <div className="mini">
+              {Object.keys(cfg.personas || {}).length
+                ? `${Object.keys(cfg.personas).length} seat${Object.keys(cfg.personas).length > 1 ? "s" : ""} set by hand, the rest random`
+                : "Random mix. Tap to assign them yourself."}
+            </div>
+          </div>
+          <div className="arw">›</div>
+        </button>
+
         <button className="btn" onClick={() => onCreate(makeLeague({ ...cfg, name: cfg.name.trim() || "Mock League" }))}>
           Start draft
         </button>
       </div>
+
+      <PersonaPicker
+        open={showPersonas}
+        onClose={() => setShowPersonas(false)}
+        teams={cfg.teams}
+        userSlot={cfg.userSlot}
+        personas={cfg.personas || {}}
+        onChange={(next) => setCfg({ ...cfg, personas: next })}
+      />
     </div>
+  );
+}
+
+/* Assign a drafting personality to each CPU seat, or leave them random.
+   Ten distinct approaches means a room that drafts like a real league. */
+function PersonaPicker({ open, onClose, teams, userSlot, personas, onChange }) {
+  const [seat, setSeat] = useState(null);
+
+  const seats = [];
+  for (let i = 0; i < teams; i++) if (i !== userSlot) seats.push(i);
+
+  if (seat != null) {
+    return (
+      <Sheet open={open} onClose={() => setSeat(null)} title={`Seat ${seat + 1}`}>
+        <div className="mini" style={{ marginBottom: 11 }}>Pick how this manager drafts.</div>
+        <button className={`act ${!personas[seat] ? "" : "m"}`}
+          onClick={() => { const n = { ...personas }; delete n[seat]; onChange(n); setSeat(null); }}>
+          <div className="ico">?</div>
+          <div style={{ flex: 1 }}>
+            <h4>Random</h4>
+            <div className="mini">Let Huddle choose when the draft starts</div>
+          </div>
+          {!personas[seat] && <div className="go">Current</div>}
+        </button>
+        {PERSONAS.map((p) => (
+          <button key={p.key} className={`act ${personas[seat] === p.key ? "g" : "m"}`}
+            onClick={() => { onChange({ ...personas, [seat]: p.key }); setSeat(null); }}>
+            <div className="ico">{p.label.slice(0, 2).toUpperCase()}</div>
+            <div style={{ flex: 1 }}>
+              <h4>{p.label}</h4>
+              <div className="mini">{p.blurb}</div>
+            </div>
+            {personas[seat] === p.key && <div className="go">Set</div>}
+          </button>
+        ))}
+      </Sheet>
+    );
+  }
+
+  return (
+    <Sheet open={open} onClose={onClose} title="Drafting personalities">
+      <div className="mini" style={{ marginBottom: 11 }}>
+        Every seat is random unless you set it. Tap one to choose how that manager drafts.
+      </div>
+      <div className="row" style={{ gap: 7, marginBottom: 11 }}>
+        <button className="chip" onClick={() => onChange({})}>Reset all to random</button>
+        <button className="chip" onClick={() => {
+          const next = {};
+          seats.forEach((i, k) => { next[i] = PERSONAS[k % PERSONAS.length].key; });
+          onChange(next);
+        }}>One of each</button>
+      </div>
+      {seats.map((i) => {
+        const chosen = personas[i] ? personaByKey(personas[i]) : null;
+        return (
+          <div key={i} className="plr" onClick={() => setSeat(i)} style={{ cursor: "pointer" }}>
+            <div className="disp" style={{ width: 40, fontSize: 15, color: "var(--mute)", flex: "none" }}>
+              {i + 1}
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div className="nm">{chosen ? chosen.label : "Random"}</div>
+              <div className="sub" style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                {chosen ? chosen.blurb : "Chosen when the draft starts"}
+              </div>
+            </div>
+            <div style={{ color: "var(--mute)", fontSize: 18 }}>›</div>
+          </div>
+        );
+      })}
+    </Sheet>
   );
 }
 
@@ -1975,10 +2175,10 @@ function DraftRoom({ lg, setLg, toast }) {
           <div className="row sp">
             <div>
               <div className="eyebrow">Round {roundOf(lg, lg.picks.length)} · Pick {slotOf(lg, lg.picks.length)} · #{lg.picks.length + 1} overall</div>
-              <h2 style={{ fontSize: 24, marginTop: 4, color: isUser ? "var(--first)" : "var(--chalk)" }}>
+              <h2 style={{ fontSize: 28, marginTop: 4, color: isUser ? "var(--first)" : "var(--chalk)" }}>
                 {isUser ? "You're on the clock" : `${lg.gms[clock].name}`}
               </h2>
-              {!isUser && <div className="sub" style={{ marginTop: 3 }}>{PERSONAS.find((x) => x.key === lg.gms[clock].persona)?.label}</div>}
+              {!isUser && <div className="sub" style={{ marginTop: 3 }}>{personaByKey(lg.gms[clock].persona).label}</div>}
               {isUser && nextUserPick && <div className="sub" style={{ marginTop: 3 }}>Next pick after this: #{(() => { for (let i = lg.picks.length + 1; i < lg.order.length; i++) if (lg.order[i] === lg.settings.userSlot) return i + 1; return "last"; })()}</div>}
             </div>
             <div style={{ textAlign: "right" }}>
@@ -2121,7 +2321,7 @@ function DraftRecap({ lg }) {
     <div className="wrap">
       <div className="fdl" style={{ paddingLeft: 12, margin: "6px 0 14px" }}>
         <div className="eyebrow">Draft complete</div>
-        <h1 style={{ fontSize: 30, marginTop: 4 }}>The Room</h1>
+        <h1 style={{ fontSize: 36, marginTop: 5 }}>The Room</h1>
         <div className="mini" style={{ marginTop: 5 }}>Grades weight projected starter points, bench depth, and value against ADP.</div>
       </div>
 
@@ -2135,7 +2335,7 @@ function DraftRecap({ lg }) {
             <div className="row sp" onClick={() => setOpen(isOpen ? -1 : r.gm.idx)} style={{ cursor: "pointer" }}>
               <div style={{ flex: 1 }}>
                 <div className="nm">{r.gm.name} {r.gm.isUser && <span className="tag t-up">YOU</span>}</div>
-                <div className="sub">{r.gm.isUser ? "Your picks" : PERSONAS.find((x) => x.key === r.gm.persona)?.label} · {Math.round(r.starterPts)} starter pts
+                <div className="sub">{r.gm.isUser ? "Your picks" : personaByKey(r.gm.persona).label} · {Math.round(r.starterPts)} starter pts
                   {r.worstBye >= 4 ? ` · ${r.worstBye} on one bye` : ""}</div>
               </div>
               <div className="disp" style={{ fontSize: 30, color: "var(--first)" }}>{grade}</div>
@@ -2163,7 +2363,7 @@ function DraftRecap({ lg }) {
       })}
 
       <div className="card">
-        <h2 style={{ fontSize: 19, marginBottom: 9 }}>Biggest value picks</h2>
+        <h2 style={{ fontSize: 23, marginBottom: 9 }}>Biggest value picks</h2>
         {steals.slice(0, 5).map((s) => (
           <div key={s.pk.overall} className="row sp" style={{ padding: "6px 0" }}>
             <div className="mini" style={{ color: "var(--chalk)" }}><Tap id={s.p.id}>{s.p.name}</Tap> <span style={{ color: "var(--mute)" }}>· {lg.gms[s.pk.gmIdx].name}</span></div>
@@ -2171,7 +2371,7 @@ function DraftRecap({ lg }) {
           </div>
         ))}
         <div className="divider" />
-        <h2 style={{ fontSize: 19, marginBottom: 9 }}>Biggest reaches</h2>
+        <h2 style={{ fontSize: 23, marginBottom: 9 }}>Biggest reaches</h2>
         {steals.slice(-4).reverse().map((s) => (
           <div key={s.pk.overall} className="row sp" style={{ padding: "6px 0" }}>
             <div className="mini" style={{ color: "var(--chalk)" }}><Tap id={s.p.id}>{s.p.name}</Tap> <span style={{ color: "var(--mute)" }}>· {lg.gms[s.pk.gmIdx].name}</span></div>
@@ -2221,7 +2421,7 @@ function TeamView({ lg, setLg, toast }) {
       <div className="row sp" style={{ marginBottom: 12 }}>
         <div>
           <div className="eyebrow">{season ? `Mock week ${week} lineup` : "Projected starters"}</div>
-          <h1 style={{ fontSize: 28, marginTop: 3 }}>{lg.gms[u].name}</h1>
+          <h1 style={{ fontSize: 34, marginTop: 4 }}>{lg.gms[u].name}</h1>
         </div>
         <div style={{ textAlign: "right" }}>
           <div className="disp num" style={{ fontSize: 30, color: "var(--first)" }}>{projTotal.toFixed(1)}</div>
@@ -2357,7 +2557,7 @@ function RosterAudit({ lg, values, ids }) {
 
   return (
     <div className="card" style={{ marginTop: 12 }}>
-      <h2 style={{ fontSize: 19, marginBottom: 10 }}>Roster audit</h2>
+      <h2 style={{ fontSize: 23, marginBottom: 10 }}>Roster audit</h2>
       <div className="grid3" style={{ marginBottom: 11 }}>
         <div className="stat"><b className="num">{rank}</b><span className="eyebrow">roster rank</span></div>
         <div className="stat"><b className="num">{Math.round(mine)}</b><span className="eyebrow">total ppg</span></div>
@@ -2540,7 +2740,7 @@ function SeasonView({ lg, setLg, toast, setTab }) {
     <div className="wrap">
       <div style={{ marginBottom: 10 }}>
         <div className="eyebrow">{done ? "Season complete" : rs ? "Regular season" : "Playoffs"}</div>
-        <h1 style={{ fontSize: 28, marginTop: 3 }}>{done ? "Final" : `Week ${s.week}`}</h1>
+        <h1 style={{ fontSize: 34, marginTop: 4 }}>{done ? "Final" : `Week ${s.week}`}</h1>
       </div>
       {/* one row, five equal segments, so nothing scrolls sideways */}
       <div className="segs">
@@ -2609,7 +2809,7 @@ function SeasonView({ lg, setLg, toast, setTab }) {
           </div>
           {odds && (
             <div className="card" style={{ marginTop: 11 }}>
-              <h2 style={{ fontSize: 19, marginBottom: 9 }}>Monte Carlo · 260 seasons</h2>
+              <h2 style={{ fontSize: 23, marginBottom: 9 }}>Monte Carlo · 260 seasons</h2>
               {odds.map((o) => (
                 <div key={o.name} style={{ marginBottom: 8 }}>
                   <div className="row sp" style={{ marginBottom: 3 }}>
@@ -2672,7 +2872,7 @@ function TradeDesk({ lg, setLg, values, toast }) {
       <>
         <div className="card">
           <div className="eyebrow">Step 1</div>
-          <h2 style={{ fontSize: 21, margin: "5px 0 6px" }}>Pick a mock trade partner</h2>
+          <h2 style={{ fontSize: 25, margin: "5px 0 6px" }}>Pick a mock trade partner</h2>
           <div className="mini">Each team's biggest hole is listed. Target the one that needs what you have spare.</div>
         </div>
         {others.map((g) => {
@@ -2736,7 +2936,7 @@ function TradeDesk({ lg, setLg, values, toast }) {
       <div className="row sp" style={{ marginBottom: 10 }}>
         <div>
           <div className="eyebrow">Mock offer to</div>
-          <h2 style={{ fontSize: 22, marginTop: 3 }}>{lg.gms[partner].name}</h2>
+          <h2 style={{ fontSize: 30, marginTop: 3 }}>{lg.gms[partner].name}</h2>
         </div>
         <button className="chip" onClick={() => setPartner(null)}>Change team</button>
       </div>
@@ -2747,7 +2947,7 @@ function TradeDesk({ lg, setLg, values, toast }) {
       {canSend && (
         <div className="card fdl" style={{ paddingLeft: 15 }}>
           <div className="eyebrow">Value check</div>
-          <h2 style={{ fontSize: 21, margin: "5px 0 9px", color: v.pct < -8 ? "var(--green)" : v.pct > 8 ? "var(--red)" : "var(--first)" }}>
+          <h2 style={{ fontSize: 25, margin: "5px 0 9px", color: v.pct < -8 ? "var(--green)" : v.pct > 8 ? "var(--red)" : "var(--first)" }}>
             {v.verdict}
           </h2>
           <div className="row sp mini" style={{ marginBottom: 9 }}><span>Out {v.a}</span><span>In {v.b}</span></div>
@@ -2883,7 +3083,7 @@ function WeekRecap({ lg, wk }) {
       })}
       {wk.injuries?.length > 0 && (
         <div className="card">
-          <h2 style={{ fontSize: 18, marginBottom: 8 }}>Injury report</h2>
+          <h2 style={{ fontSize: 30, marginBottom: 8 }}>Injury report</h2>
           {wk.injuries.map((n) => (
             <div key={n.id} className="mini" style={{ marginBottom: 4 }}>
               <Tap id={n.id} style={{ color: "var(--red)", fontWeight: 700 }}>{BY_ID[n.id].name}</Tap> out {n.wks > 20 ? "for the season" : `${n.wks} week${n.wks > 1 ? "s" : ""}`}
@@ -2912,13 +3112,13 @@ function StandingsView({ lg, s, table }) {
       </div>
       {s.playoffs && (
         <div className="card">
-          <h2 style={{ fontSize: 19, marginBottom: 8 }}>Bracket</h2>
+          <h2 style={{ fontSize: 23, marginBottom: 8 }}>Bracket</h2>
           <div className="mini">Seeds: {s.playoffs.seeds.map((i, k) => `${k + 1}. ${lg.gms[i].name}`).join(" · ")}</div>
         </div>
       )}
       {s.log.length > 0 && (
         <div className="card">
-          <h2 style={{ fontSize: 19, marginBottom: 9 }}>Transactions</h2>
+          <h2 style={{ fontSize: 23, marginBottom: 9 }}>Transactions</h2>
           {s.log.slice().reverse().slice(0, 12).map((entry, i) => (
             entry.type === "trade" ? (
               <div key={i} style={{ marginBottom: 9 }}>
@@ -3153,7 +3353,7 @@ function TradeCalc({ lg }) {
       {(send.length > 0 || get.length > 0) && (
         <div className="card fdl" style={{ paddingLeft: 15 }}>
           <div className="eyebrow">Verdict</div>
-          <h2 style={{ fontSize: 24, margin: "6px 0 11px", color: v.pct < -8 ? "var(--green)" : v.pct > 8 ? "var(--red)" : "var(--first)" }}>
+          <h2 style={{ fontSize: 28, margin: "6px 0 11px", color: v.pct < -8 ? "var(--green)" : v.pct > 8 ? "var(--red)" : "var(--first)" }}>
             {v.verdict}
           </h2>
           <div className="row" style={{ gap: 2, marginBottom: 8 }}>
@@ -3508,7 +3708,7 @@ function ShotFinder({ lg, toast, my, save }) {
         <>
           <div className="card fdl" style={{ paddingLeft: 15 }}>
             <div className="eyebrow">Biggest hole</div>
-            <h2 style={{ fontSize: 26, margin: "5px 0 7px" }}>{analysis.weak}</h2>
+            <h2 style={{ fontSize: 30, margin: "5px 0 7px" }}>{analysis.weak}</h2>
             <div className="mini">Deals below all send out a position where this roster already has starters banked.</div>
           </div>
           {analysis.trades.length === 0 && <div className="card"><div className="mini">No clean fits. This roster is balanced, so hold and work the wire instead.</div></div>}
@@ -3558,8 +3758,9 @@ function ToolsView({ lg, toast }) {
 
 function Versus({ lg }) {
   const values = useMemo(() => buildValues(lg, lg.season), [lg]);
-  const [a, setA] = useState(PLAYERS[12]);
-  const [b, setB] = useState(PLAYERS[19]);
+  // default to a real positional decision rather than two unrelated players
+  const [a, setA] = useState(() => PLAYERS.find((p) => p.pos === "WR") || PLAYERS[2]);
+  const [b, setB] = useState(() => PLAYERS.filter((p) => p.pos === "WR")[1] || PLAYERS[3]);
   const [pick, setPick] = useState(null);
   const ppr = scoringOf(lg);
   const myIds = lg.rosters?.[lg.settings.userSlot] || [];
@@ -3603,7 +3804,7 @@ function Versus({ lg }) {
       </div>
       <div className="card fdl" style={{ paddingLeft: 15 }}>
         <div className="eyebrow">The model says</div>
-        <h2 style={{ fontSize: 24, margin: "6px 0 8px" }}>{winner.name}</h2>
+        <h2 style={{ fontSize: 28, margin: "6px 0 8px" }}>{winner.name}</h2>
         <div className="mini">
           {margin < 0.06 ? "Effectively a coin flip. Take the one whose role you believe in more." :
             margin < 0.18 ? "A real but modest edge." : "Clear separation between these two."}
@@ -3728,10 +3929,10 @@ function GMChat({ lg }) {
    with no mock league required. Saved separately from any league.
    ============================================================ */
 
-export const VERSION = "1.8.1";
+export const VERSION = "1.9.0";
 const MY_KEY = "huddle:myteam";
 
-const DEFAULT_MY = { ids: [], teams: 12, ppr: 1, superflex: false, name: "My Team", topPad: 0 };
+const DEFAULT_MY = { ids: [], teams: 12, ppr: 1, superflex: false, name: "My Team", topPad: 0, liveInjuries: true };
 
 // a minimal league-shaped object so the engine works outside a mock draft
 function shellLeague(my) {
@@ -3858,7 +4059,7 @@ function RealTradeFinder({ my }) {
     <>
       <div className="card fdl" style={{ paddingLeft: 15 }}>
         <div className="eyebrow">Biggest hole</div>
-        <h2 style={{ fontSize: 26, margin: "5px 0 7px" }}>{weak}</h2>
+        <h2 style={{ fontSize: 30, margin: "5px 0 7px" }}>{weak}</h2>
         <div className="mini">
           Every deal below sends out a spot where you already have starters banked. Values are rest-of-season
           points over replacement for a {my.teams}-team {my.ppr === 1 ? "PPR" : my.ppr === 0.5 ? "half-PPR" : "standard"} league.
@@ -3913,7 +4114,10 @@ function DraftHelp({ my, save, toast }) {
 
 /* ---- SETTINGS ---- */
 
-function Settings({ my, save, toast, onWipe }) {
+function Settings({ my, save, toast, onWipe, injuries }) {
+  const liveOn = my.liveInjuries !== false;
+  // tolerate being mounted without the loader attached
+  const inj = injuries || { meta: null, busy: false, refresh: () => {}, clear: () => {} };
   const [leagues, setLeagues] = useState([]);
   const [busy, setBusy] = useState(false);
   const [view, setView] = useState("main");
@@ -3981,7 +4185,7 @@ function Settings({ my, save, toast, onWipe }) {
       <div className="row sp" style={{ marginBottom: 11 }}>
         <div>
           <div className="eyebrow">Applies to new leagues and your saved roster</div>
-          <h2 style={{ fontSize: 22, marginTop: 3 }}>Scoring rules</h2>
+          <h2 style={{ fontSize: 30, marginTop: 3 }}>Scoring rules</h2>
         </div>
         <button className="chip" onClick={() => setView("main")}>Back</button>
       </div>
@@ -4004,20 +4208,49 @@ function Settings({ my, save, toast, onWipe }) {
       </div>
 
       <div className="card">
-        <h2 style={{ fontSize: 19, marginBottom: 6 }}>Top spacing</h2>
+        <div className="row sp" style={{ marginBottom: 7 }}>
+          <h2 style={{ fontSize: 19 }}>Live injury report</h2>
+          <button className={`chip ${liveOn ? "on" : ""}`}
+            onClick={() => save({ ...my, liveInjuries: !liveOn })}>
+            {liveOn ? "On" : "Off"}
+          </button>
+        </div>
         <div className="mini" style={{ marginBottom: 10 }}>
-          Phones report status-bar height differently, especially in installed web apps. If the header sits too close
-          to the clock, or too far from it, nudge it here.
+          Real NFL injury designations from Sleeper, matched onto the player pool. Applies to
+          rankings, the trade tools and draft help. A mock season in progress keeps its own
+          simulated injuries so it still plays out differently every time.
         </div>
-        <div className="grid2" style={{ gap: 7 }}>
-          {[0, 10, 20, 34].map((n) => (
-            <button key={n} className={`chip ${(my.topPad || 0) === n ? "on" : ""}`}
-              style={{ padding: "11px 8px", textAlign: "center", display: "block" }}
-              onClick={() => save({ ...my, topPad: n })}>
-              {n === 0 ? "Default" : `+${n}px`}
+        {liveOn && inj.meta && (
+          <div className="grid3" style={{ marginBottom: 10 }}>
+            <div className="stat"><b className="num">{inj.meta.matched}</b><span className="eyebrow">matched</span></div>
+            <div className="stat"><b className="num">{inj.meta.count}</b><span className="eyebrow">reported</span></div>
+            <div className="stat">
+              <b className="num" style={{ fontSize: 15 }}>
+                {inj.meta.fetchedAt ? new Date(inj.meta.fetchedAt).toLocaleDateString() : "never"}
+              </b>
+              <span className="eyebrow">updated</span>
+            </div>
+          </div>
+        )}
+        {liveOn && inj.meta?.error && (
+          <div className="mini" style={{ color: "var(--red)", marginBottom: 9 }}>
+            Could not reach Sleeper{inj.meta.source === "stale" ? ", showing the last saved copy." : "."} The rest of Huddle is unaffected.
+          </div>
+        )}
+        {liveOn && (
+          <div className="grid2">
+            <button className="btn alt" disabled={inj.busy} onClick={() => inj.refresh(true)}>
+              {inj.busy ? "Fetching…" : "Refresh now"}
             </button>
-          ))}
-        </div>
+            <button className="btn alt" onClick={() => inj.clear()}>Clear cached</button>
+          </div>
+        )}
+        {liveOn && (
+          <div className="mini" style={{ marginTop: 8 }}>
+            Sleeper asks that this be fetched at most once a day, so it is cached on device and
+            refreshes automatically after 12 hours.
+          </div>
+        )}
       </div>
 
       <button className="act" onClick={() => setView("boards")}>
@@ -4045,7 +4278,7 @@ function Settings({ my, save, toast, onWipe }) {
       </button>
 
       <div className="card">
-        <h2 style={{ fontSize: 19, marginBottom: 9 }}>Save & restore</h2>
+        <h2 style={{ fontSize: 23, marginBottom: 9 }}>Save & restore</h2>
         <div className="mini" style={{ marginBottom: 11 }}>
           Everything lives in this browser only. Export before you clear site data, switch phones, or reinstall.
           The file holds your roster and every mock league.
@@ -4059,7 +4292,7 @@ function Settings({ my, save, toast, onWipe }) {
       </div>
 
       <div className="card">
-        <h2 style={{ fontSize: 19, marginBottom: 7 }}>Automatic recovery</h2>
+        <h2 style={{ fontSize: 23, marginBottom: 7 }}>Automatic recovery</h2>
         <div className="mini" style={{ marginBottom: 10 }}>
           Huddle keeps a second, version-proof copy of every mock league on this device. It updates as your league saves and is refreshed again before fetching a new version.
         </div>
@@ -4070,7 +4303,7 @@ function Settings({ my, save, toast, onWipe }) {
       </div>
 
       <div className="card">
-        <h2 style={{ fontSize: 19, marginBottom: 9 }}>Stored data</h2>
+        <h2 style={{ fontSize: 23, marginBottom: 9 }}>Stored data</h2>
         <div className="row sp mini" style={{ marginBottom: 5 }}>
           <span>Your roster</span><b style={{ color: "var(--chalk)" }}>{my.ids.length} players</b>
         </div>
@@ -4098,7 +4331,24 @@ function Settings({ my, save, toast, onWipe }) {
       </div>
 
       <div className="card">
-        <h2 style={{ fontSize: 19, marginBottom: 9 }}>About the numbers</h2>
+        <h2 style={{ fontSize: 23, marginBottom: 6 }}>Top spacing</h2>
+        <div className="mini" style={{ marginBottom: 10 }}>
+          Phones report status-bar height differently, especially in installed web apps. If the header sits too close
+          to the clock, or too far from it, nudge it here.
+        </div>
+        <div className="grid2" style={{ gap: 7 }}>
+          {[0, 10, 20, 34].map((n) => (
+            <button key={n} className={`chip ${(my.topPad || 0) === n ? "on" : ""}`}
+              style={{ padding: "11px 8px", textAlign: "center", display: "block" }}
+              onClick={() => save({ ...my, topPad: n })}>
+              {n === 0 ? "Default" : `+${n}px`}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="card">
+        <h2 style={{ fontSize: 23, marginBottom: 9 }}>About the numbers</h2>
         <div className="mini">
           Projections are built from consensus ADP, not scraped expert projections. Ranking order is
           accurate, absolute point totals are estimates. Byes are the real 2026 schedule: six teams are off in
@@ -4107,6 +4357,52 @@ function Settings({ my, save, toast, onWipe }) {
       </div>
     </div>
   );
+}
+
+/* ---- live injury loading ----
+   Reads the on-device cache immediately so badges appear without waiting on
+   the network, then refreshes in the background when the cache is stale. */
+
+function useLiveInjuries(enabled) {
+  const [meta, setMeta] = useState(() => getLiveMeta());
+  const [busy, setBusy] = useState(false);
+
+  const apply = useCallback((payload) => {
+    if (!payload) return null;
+    const { byId, matched, unmatched } = matchInjuries(payload.list);
+    const next = {
+      fetchedAt: payload.fetchedAt, matched, unmatched,
+      source: payload.source, error: payload.error || null,
+      count: (payload.list || []).length,
+    };
+    setLiveInjuries(byId, next);
+    setMeta(next);
+    return next;
+  }, []);
+
+  const refresh = useCallback(async (force = false) => {
+    setBusy(true);
+    try { apply(await loadInjuries({ force })); }
+    catch { /* never block the app on this */ }
+    setBusy(false);
+  }, [apply]);
+
+  useEffect(() => {
+    if (!enabled) { setLiveInjuries(null, null); setMeta(null); return; }
+    let alive = true;
+    (async () => {
+      const payload = await loadInjuries({ force: false });
+      if (alive) apply(payload);
+    })();
+    return () => { alive = false; };
+  }, [enabled, apply]);
+
+  const clear = useCallback(async () => {
+    try { await window.storage.delete(INJURY_CACHE_KEY); } catch { }
+    setLiveInjuries(null, null); setMeta(null);
+  }, []);
+
+  return { meta, busy, refresh, clear };
 }
 
 /* ---- tappable player card ----
@@ -4201,10 +4497,33 @@ function PlayerCardSheet({ id, lg, onClose }) {
       {inj > 0 && (
         <div className="card" style={{ borderColor: "var(--red)", marginBottom: 11 }}>
           <div className="mini" style={{ color: "var(--red)", fontWeight: 700 }}>
-            Out {inj > 20 ? "for the season" : `${inj} more week${inj > 1 ? "s" : ""}`}
+            Out {inj > 20 ? "for the season" : `${inj} more week${inj > 1 ? "s" : ""}`} in this simulation
           </div>
         </div>
       )}
+
+      {(() => {
+        const live = injuryFor(p.id);
+        if (!live) return null;
+        return (
+          <div className="card" style={{ borderColor: live.factor === 0 ? "var(--red)" : "#E9A03A", marginBottom: 11 }}>
+            <div className="eyebrow" style={{ color: live.factor === 0 ? "var(--red)" : "#E9A03A" }}>
+              Real injury report
+            </div>
+            <div className="nm" style={{ marginTop: 5 }}>{live.label}</div>
+            <div className="mini" style={{ marginTop: 4 }}>
+              {live.bodyPart ? `${live.bodyPart}. ` : ""}
+              {live.note ? `${live.note} ` : ""}
+              {live.factor === 0
+                ? "Treated as unavailable in preseason rankings and the real-team tools."
+                : `Rest-of-season value discounted to ${Math.round(live.factor * 100)}%.`}
+            </div>
+            <div className="mini" style={{ marginTop: 5, color: "var(--mute)" }}>
+              From Sleeper. A running mock season uses its own simulated injuries instead.
+            </div>
+          </div>
+        );
+      })()}
 
       {o && !o.status && (
         <div className="card" style={{ marginBottom: 11 }}>
@@ -4324,7 +4643,7 @@ function BoardArchive({ onBack }) {
         <div className="row sp" style={{ marginBottom: 11 }}>
           <div style={{ minWidth: 0 }}>
             <div className="eyebrow">{new Date(open.at).toLocaleDateString()} · {open.scoringLabel}</div>
-            <h2 style={{ fontSize: 22, marginTop: 3 }}>{open.name}</h2>
+            <h2 style={{ fontSize: 30, marginTop: 3 }}>{open.name}</h2>
           </div>
           <button className="chip" onClick={() => setOpen(null)}>Back</button>
         </div>
@@ -4382,7 +4701,7 @@ function BoardArchive({ onBack }) {
       <div className="row sp" style={{ marginBottom: 11 }}>
         <div>
           <div className="eyebrow">Saved automatically</div>
-          <h2 style={{ fontSize: 22, marginTop: 3 }}>Past draft boards</h2>
+          <h2 style={{ fontSize: 30, marginTop: 3 }}>Past draft boards</h2>
         </div>
         <button className="chip" onClick={onBack}>Back</button>
       </div>
@@ -4527,7 +4846,7 @@ function Hub({ go, my }) {
   return (
     <div className="wrap top">
       <div style={{ padding: "10px 0 20px" }}>
-        <h1 style={{ fontSize: 64, letterSpacing: "-.02em", lineHeight: .9 }}>Huddle</h1>
+        <h1 style={{ fontSize: 72, letterSpacing: "-.02em", lineHeight: .9 }}>Huddle</h1>
         <div className="row" style={{ gap: 9, marginTop: 10 }}>
           <div style={{ width: 34, height: 3, background: "var(--first)" }} />
           <div className="eyebrow">2026 fantasy football</div>
@@ -4565,6 +4884,7 @@ export default function App() {
   const [toastMsg, setToastMsg] = useState("");
   const [my, saveMy, myReady] = useMyTeam();
   const [cardId, setCardId] = useState(null);
+  const injuries = useLiveInjuries(my.liveInjuries !== false);
   const kbInset = useKeyboardInset();
   const [pwa, setPwa] = useState(false);
   const saveTimer = useRef(null);
@@ -4615,6 +4935,16 @@ export default function App() {
   useEffect(() => {
     if (lg?.id && screen === "mock") recoverySet(RECOVERY_ACTIVE, { leagueId: lg.id, tab, at: Date.now() });
   }, [lg?.id, tab, screen]);
+
+  /* Snapshot the board the first time a draft completes. Without this the
+     archive stays empty no matter how many drafts you finish. */
+  const archived = useRef(new Set());
+  useEffect(() => {
+    if (!lg || !draftDone(lg)) return;
+    if (archived.current.has(lg.id)) return;
+    archived.current.add(lg.id);
+    archiveBoard(lg).then((saved) => { if (saved) toast("Draft board saved"); });
+  }, [lg && lg.id, lg && lg.picks.length, toast]);
 
   const openLeague = (l) => {
     ensureSchedule(l);   // older saves get a schedule written in on open
@@ -4707,7 +5037,7 @@ export default function App() {
             )}
             {screen === "trade" && <TradeHelp my={my} save={saveMy} toast={toast} />}
             {screen === "draft" && <DraftHelp my={my} save={saveMy} toast={toast} />}
-            {screen === "settings" && <Settings my={my} save={saveMy} toast={toast} onWipe={() => { recoveryDel(RECOVERY_ACTIVE); setLg(null); }} />}
+            {screen === "settings" && <Settings my={my} save={saveMy} toast={toast} injuries={injuries} onWipe={() => { recoveryDel(RECOVERY_ACTIVE); setLg(null); }} />}
             <div className="navpad" />
           </div>
         </>

@@ -68,9 +68,11 @@ bench, and bye-week overlap on their own roster. On top of that sit hard rules:
 - No fourth WR before the starting lineup is whole
 - Position caps, and reserved slots so nobody finishes without a kicker
 
-Seven drafting personalities sit on top of that: Zero RB, Hero RB, Late-Round QB,
-Analytics, Best Available, Roster Builder and Reacher, each with its own tolerance
-for reaching. Across 25 test drafts: zero rule violations, zero unfillable rosters,
+Ten drafting personalities sit on top of that: Best Available, Roster Builder,
+Zero RB, Hero RB, Late-Round QB, Elite TE, Reacher, Analytics, Upside Hunter and
+Floor Merchant. Assign them to specific seats before the draft or leave them
+random. The strategies are structural rather than cosmetic: a Zero RB manager is
+blocked from taking a back early, so he actually runs Zero RB. Across 25 test drafts: zero rule violations, zero unfillable rosters,
 and roster shapes spread across a dozen distinct constructions.
 
 Draft ends with grades, value picks, and biggest reaches for all teams.
@@ -88,6 +90,18 @@ instead of being decoration.
 - Mid-season trade offers from CPU teams, already priced
 - Monte Carlo playoff odds (260 seasons) from any point in the year
 - Sim week-by-week or straight to the title
+
+### Live injuries
+
+Real NFL injury designations come from Sleeper's public player endpoint. The
+payload is reduced to what Huddle needs, cached on device, and refreshed at most
+every 12 hours, which respects Sleeper's guidance of roughly one fetch per day.
+
+Scope is deliberate. Live injuries apply to rankings, draft help and the trade
+tools. A **mock season in progress keeps its own simulated injuries**, because the
+point of the simulation is that it plays out differently each time. Everything
+fails soft: if Sleeper is unreachable the app uses the last saved copy, or none,
+and carries on. Toggle it in Settings.
 
 ### Trades
 - **Calculator.** Any number of players per side. Values are rest-of-season points

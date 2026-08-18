@@ -208,6 +208,53 @@ check("lineup swaps persist before the season starts", () => {
   return null;
 });
 
+// archive round trip: save a finished board, read it back
+{
+  const saved = await M.archiveBoard(league);
+  const index = JSON.parse(memory["huddle:boards"] || "[]");
+  const stored = memory[`huddle:board:${league.id}`] ? JSON.parse(memory[`huddle:board:${league.id}`]) : null;
+  check("finished drafts land in the board archive", () => {
+    if (!saved) return "archiveBoard reported failure";
+    if (index.length !== 1) return `index has ${index.length} entries`;
+    if (!stored) return "board body was not written";
+    if (stored.picks.length !== league.picks.length) return "pick count mismatch";
+    const first = stored.picks[0];
+    if (!first.name || !first.pos || !first.team) return "picks missing inline player details";
+    if (stored.picks.some((p) => !p.round || !p.slot)) return "picks missing round or slot";
+    return null;
+  });
+}
+
+check("each drafting personality behaves distinctly", () => {
+  const seats = { 0: "zeroRB", 1: "heroRB", 2: "lateQB", 3: "eliteTE" };
+  const first = { zeroRB: [], heroRB: [], lateQB: [], eliteTE: [] };
+  for (let run = 0; run < 6; run++) {
+    const table = M.makeLeague({ teams: 12, rounds: 15, superflex: false, userSlot: 5, ppr: 1, personas: seats });
+    while (!M.draftDone(table)) {
+      const onClock = M.onClock(table);
+      const taken = new Set(table.picks.map((p) => p.playerId));
+      M.makePick(table, M.aiPick(table, onClock, M.PLAYERS.filter((p) => !taken.has(p.id))).id);
+    }
+    for (const [seat, key] of Object.entries(seats)) {
+      if (table.gms[seat].persona !== key) return `seat ${seat} ignored its assigned personality`;
+      const want = key === "lateQB" ? "QB" : key === "eliteTE" ? "TE" : "RB";
+      const pick = table.picks.find((p) => p.gmIdx === Number(seat) && M.BY_ID[p.playerId].pos === want);
+      first[key].push(pick ? M.roundOf(table, pick.overall - 1) : 99);
+      const counts = {};
+      table.rosters[seat].forEach((id) => { counts[M.BY_ID[id].pos] = (counts[M.BY_ID[id].pos] || 0) + 1; });
+      if (counts.K !== 1 || counts.DST !== 1 || !counts.QB || !counts.TE || counts.RB < 2) {
+        return `${key} finished with an illegal roster`;
+      }
+    }
+  }
+  const avg = (a) => a.reduce((x, y) => x + y, 0) / a.length;
+  if (avg(first.zeroRB) < 4) return `Zero RB took a back in round ${avg(first.zeroRB).toFixed(1)}`;
+  if (avg(first.heroRB) > 2.5) return "Hero RB did not anchor early";
+  if (avg(first.lateQB) < 6) return "Late-round QB reached for a quarterback";
+  if (avg(first.eliteTE) > 5) return "Elite TE did not prioritize the position";
+  return null;
+});
+
 console.log("\nScreens");
 
 const noop = () => {};
