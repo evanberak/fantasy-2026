@@ -3929,7 +3929,7 @@ function GMChat({ lg }) {
    with no mock league required. Saved separately from any league.
    ============================================================ */
 
-export const VERSION = "1.9.0";
+export const VERSION = "1.9.1";
 const MY_KEY = "huddle:myteam";
 
 const DEFAULT_MY = { ids: [], teams: 12, ppr: 1, superflex: false, name: "My Team", topPad: 0, liveInjuries: true };
@@ -4846,7 +4846,9 @@ function Hub({ go, my }) {
   return (
     <div className="wrap top">
       <div style={{ padding: "10px 0 20px" }}>
-        <h1 style={{ fontSize: 72, letterSpacing: "-.02em", lineHeight: .9 }}>Huddle</h1>
+        <h1 style={{ fontSize: 72, letterSpacing: "-.02em", lineHeight: .9 }}>
+          Huddle<span style={{ color: "var(--first)" }}>.</span>
+        </h1>
         <div className="row" style={{ gap: 9, marginTop: 10 }}>
           <div style={{ width: 34, height: 3, background: "var(--first)" }} />
           <div className="eyebrow">2026 fantasy football</div>

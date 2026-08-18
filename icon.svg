@@ -1,6 +1,21 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" rx="112" fill="#0C1116"/>
-  <rect x="96" y="120" width="14" height="272" fill="#FFD400"/>
-  <text x="150" y="326" font-family="Impact, 'Barlow Condensed', sans-serif" font-size="200"
-        fill="#E9EEF2" letter-spacing="-6">H</text>
+<!--
+  Huddle app icon.
+
+  The H is drawn as three rectangles rather than rendered text. Icons get
+  rasterized by the OS on machines that may not have Impact or Barlow
+  Condensed installed, and a missing font silently falls back to something
+  else. Geometry looks identical everywhere.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" rx="114" fill="#0C1116"/>
+
+  <!-- H: two posts and a crossbar -->
+  <g fill="#E9EEF2">
+    <rect x="137" y="150" width="46" height="212" rx="6"/>
+    <rect x="257" y="150" width="46" height="212" rx="6"/>
+    <rect x="137" y="233" width="166" height="46" rx="6"/>
+  </g>
+
+  <!-- gold dot, on the baseline to the right of the H -->
+  <circle cx="349" cy="339" r="25" fill="#FFD400"/>
 </svg>

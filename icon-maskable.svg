@@ -1,0 +1,16 @@
+<!--
+  Maskable variant. Android crops icons to a circle or squircle, so the mark
+  is scaled down to sit inside the safe zone (middle 80%) and the background
+  bleeds to the full canvas.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" fill="#0C1116"/>
+  <g transform="translate(256 256) scale(0.78) translate(-256 -256)">
+    <g fill="#E9EEF2">
+      <rect x="137" y="150" width="46" height="212" rx="6"/>
+      <rect x="257" y="150" width="46" height="212" rx="6"/>
+      <rect x="137" y="233" width="166" height="46" rx="6"/>
+    </g>
+    <circle cx="349" cy="339" r="25" fill="#FFD400"/>
+  </g>
+</svg>

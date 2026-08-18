@@ -179,7 +179,8 @@ storage.js              localStorage-backed persistence shim
 anthropic.js            routes Claude calls (key or proxy)
 SMOKE_TEST.mjs          renders every screen, checks the engine
 manifest.webmanifest    home-screen install
-icon.svg
+icon.svg                app icon, plus PNG sizes for iOS and Android
+apple-touch-icon.png    iOS requires a PNG here, it will not use an SVG
 package.json
 vite.config.js
 .env.example
