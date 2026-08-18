@@ -2342,9 +2342,22 @@ function DraftRecap({ lg }) {
             </div>
             {isOpen && (
               <div style={{ marginTop: 9, borderTop: "1px solid var(--line)", paddingTop: 4 }}>
-                {r.ids.map((id, i) => {
+                {r.ids.map((id) => {
                   const p = BY_ID[id];
+                  /* Rosters change after the draft. Anyone picked up on waivers
+                     or acquired in a trade has no draft pick, so this has to
+                     cope with a missing one rather than assume it exists. */
                   const pk = lg.picks.find((x) => x.playerId === id);
+                  if (!pk) {
+                    return (
+                      <PlayerRow key={id} p={p}
+                        sub={`Added in season · ${p.team} · Bye ${p.bye || "TBD"}`}
+                        right={<div style={{ textAlign: "right" }}>
+                          <div className="num" style={{ fontSize: 12, color: "var(--mute)" }}>n/a</div>
+                          <div className="sub">undrafted</div>
+                        </div>} />
+                    );
+                  }
                   const edge = pk.overall - p.adp;
                   return (
                     <PlayerRow key={id} p={p} sub={`${roundOf(lg, pk.overall - 1)}.${String(slotOf(lg, pk.overall - 1)).padStart(2, "0")} · ${p.team} · Bye ${p.bye || "TBD"}`}
@@ -2865,7 +2878,18 @@ function TradeDesk({ lg, setLg, values, toast }) {
   const [reply, setReply] = useState(null);
 
   const others = lg.gms.filter((g) => !g.isUser);
-  const toggle = (arr, setArr, id) => setArr(arr.includes(id) ? arr.filter((x) => x !== id) : [...arr, id]);
+
+  /* Sort partners by how many workable deals exist with them, so the teams
+     worth approaching sit at the top instead of being found by trial. */
+  const ranked = useMemo(() => {
+    if (!lg.season) return [];
+    return others.map((g) => ({
+      g,
+      need: weakestPos(lg, g.idx, values),
+      rec: lg.season.record[g.idx],
+      fits: findTrades(lg, lg.rosters[u], values, { [g.idx]: lg.rosters[g.idx] }).length,
+    })).sort((a, b) => b.fits - a.fits);
+  }, [lg, values, u]);
 
   if (partner == null) {
     return (
@@ -2875,26 +2899,40 @@ function TradeDesk({ lg, setLg, values, toast }) {
           <h2 style={{ fontSize: 25, margin: "5px 0 6px" }}>Pick a mock trade partner</h2>
           <div className="mini">Each team's biggest hole is listed. Target the one that needs what you have spare.</div>
         </div>
-        {others.map((g) => {
-          const need = weakestPos(lg, g.idx, values);
-          const rec = lg.season.record[g.idx];
-          return (
-            <button key={g.idx} className="act b" onClick={() => { setPartner(g.idx); setMine([]); setTheirs([]); setReply(null); }}>
-              <div className="ico">{need}</div>
-              <div style={{ flex: 1 }}>
-                <h4>{g.name}</h4>
-                <div className="mini">{rec.w}-{rec.l} · needs {need} help</div>
+        {ranked.map(({ g, need, rec, fits }) => (
+          <button key={g.idx} className={`act ${fits ? "g" : "b"}`}
+            onClick={() => { setPartner(g.idx); setMine([]); setTheirs([]); setReply(null); }}>
+            <div className="ico">{need}</div>
+            <div style={{ flex: 1 }}>
+              <h4>{g.name}</h4>
+              <div className="mini">
+                {rec.w}-{rec.l} · needs {need} help
+                {fits ? ` · ${fits} deal${fits > 1 ? "s" : ""} to look at` : " · no clean fit"}
               </div>
-              <div className="arw">›</div>
-            </button>
-          );
-        })}
+            </div>
+            <div className="arw">›</div>
+          </button>
+        ))}
       </>
     );
   }
 
   const v = tradeVerdict(mine, theirs, values);
   const canSend = mine.length > 0 && theirs.length > 0;
+
+  /* Building an offer piece by piece is slow. These are packages this partner
+     would plausibly accept, computed from both rosters, so a fair deal is two
+     taps away and the manual builder stays available underneath. */
+  const suggestions = useMemo(() => {
+    if (partner == null) return [];
+    const single = { [partner]: lg.rosters[partner] };
+    return findTrades(lg, lg.rosters[u], values, single)
+      // predict the answer rather than hiding deals, so nothing looks broken
+      // when a partner is simply hard to trade with
+      .map((t) => ({ ...t, reply: evaluateOffer(lg, lg.season, partner, t.give, t.getIds) }))
+      .sort((a, b) => (b.reply.accept - a.reply.accept) || (b.myGain - a.myGain))
+      .slice(0, 3);
+  }, [partner, lg, values, u]);
 
   const send = () => {
     const res = evaluateOffer(lg, lg.season, partner, mine, theirs);
@@ -2940,6 +2978,49 @@ function TradeDesk({ lg, setLg, values, toast }) {
         </div>
         <button className="chip" onClick={() => setPartner(null)}>Change team</button>
       </div>
+
+      {suggestions.length > 0 && (
+        <>
+          <div className="eyebrow" style={{ marginBottom: 8 }}>Ready-made offers, best first</div>
+          {suggestions.map((t, i) => {
+            const loaded = mine.length === t.give.length && theirs.length === t.getIds.length
+              && t.give.every((x) => mine.includes(x)) && t.getIds.every((x) => theirs.includes(x));
+            return (
+              <button key={i} className={`act ${loaded ? "" : "g"}`} style={{ alignItems: "flex-start" }}
+                onClick={() => { setMine(t.give); setTheirs(t.getIds); setReply(null); }}>
+                <div className="ico">{Math.round(t.ratio * 100)}%</div>
+                <div style={{ flex: 1 }}>
+                  <h4>
+                    {loaded ? "Loaded below"
+                      : t.reply.accept ? "They should say yes"
+                        : t.reply.close ? "Close, expect a counter"
+                          : "Worth asking"}
+                  </h4>
+                  <div className="mini">
+                    Send {t.give.map((id) => BY_ID[id].name).join(" and ")}
+                    {" for "}{t.getIds.map((id) => BY_ID[id].name).join(" and ")}
+                  </div>
+                  <div className="mini" style={{ marginTop: 3, color: t.myGain >= 0 ? "var(--green)" : "var(--mute)" }}>
+                    {t.myGain >= 0
+                      ? `Your starters gain ${t.myGain.toFixed(1)} points a week`
+                      : `Costs ${Math.abs(t.myGain).toFixed(1)} points a week now, buys a better starter`}
+                  </div>
+                </div>
+                <div className="arw">›</div>
+              </button>
+            );
+          })}
+          <div className="divider" />
+          <div className="eyebrow" style={{ marginBottom: 8 }}>Or build your own</div>
+        </>
+      )}
+
+      {(mine.length > 0 || theirs.length > 0) && (
+        <button className="chip" style={{ marginBottom: 9 }}
+          onClick={() => { setMine([]); setTheirs([]); setReply(null); }}>
+          Clear selection
+        </button>
+      )}
 
       <Col label="You send" ids={lg.rosters[u]} sel={mine} setSel={setMine} />
       <Col label={`You get from ${lg.gms[partner].name}`} ids={lg.rosters[partner]} sel={theirs} setSel={setTheirs} />
@@ -3929,7 +4010,7 @@ function GMChat({ lg }) {
    with no mock league required. Saved separately from any league.
    ============================================================ */
 
-export const VERSION = "1.9.1";
+export const VERSION = "1.9.2";
 const MY_KEY = "huddle:myteam";
 
 const DEFAULT_MY = { ids: [], teams: 12, ppr: 1, superflex: false, name: "My Team", topPad: 0, liveInjuries: true };

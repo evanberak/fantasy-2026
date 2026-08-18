@@ -255,6 +255,22 @@ check("each drafting personality behaves distinctly", () => {
   return null;
 });
 
+check("draft recap survives post-draft roster changes", () => {
+  // waivers and trades put players on rosters who were never drafted
+  const drafted = new Set(league.picks.map((p) => p.playerId));
+  const added = Object.values(league.rosters).flat().filter((id) => !drafted.has(id));
+  if (!added.length) return "no waiver adds to test against";
+  for (let team = 0; team < league.settings.teams; team++) {
+    for (const id of league.rosters[team]) {
+      const pick = league.picks.find((x) => x.playerId === id);
+      // the recap must not assume a pick exists
+      if (!pick && !M.BY_ID[id]) return `roster ${team} holds an unknown player`;
+    }
+  }
+  const html = renderToString(React.createElement(M.DraftRecap, { lg: league }));
+  return html.length > 100 ? null : "recap rendered almost nothing";
+});
+
 console.log("\nScreens");
 
 const noop = () => {};
