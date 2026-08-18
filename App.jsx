@@ -1072,9 +1072,17 @@ const CSS = `
 .fdl::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--first)}
 .hdr{position:sticky;top:0;padding-top:calc(11px + var(--safe-top) + var(--nudge));z-index:30;background:rgba(12,17,22,.94);backdrop-filter:blur(8px);
   border-bottom:1px solid var(--line);padding:10px 14px 11px;display:flex;align-items:center;gap:10px;min-height:56px}
-.tabs{position:sticky;bottom:0;z-index:30;display:grid;grid-template-columns:repeat(5,1fr);gap:4px;
+.tabs{position:fixed;left:0;right:0;bottom:0;z-index:40;display:grid;grid-template-columns:repeat(5,1fr);gap:4px;
   background:rgba(10,14,19,.98);backdrop-filter:blur(14px);border-top:1px solid var(--line);
   padding:8px 8px calc(8px + var(--safe-bot))}
+.navpad{height:calc(78px + var(--safe-bot))}
+.subnav{position:sticky;top:0;z-index:25;display:flex;gap:6px;overflow-x:auto;padding:9px 14px;
+  background:rgba(12,17,22,.96);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+.subnav::-webkit-scrollbar{display:none}
+.snb{padding:7px 12px;border-radius:99px;background:var(--panel2);border:1px solid var(--line);white-space:nowrap;
+  font-size:12px;font-weight:700;color:var(--mute);font-family:'Barlow Condensed',sans-serif;
+  text-transform:uppercase;letter-spacing:.05em;position:relative}
+.snb.on{background:var(--first);color:#101519;border-color:var(--first)}
 .tab{padding:9px 2px 8px;text-align:center;font-size:11px;letter-spacing:.05em;text-transform:uppercase;
   color:var(--mute);font-weight:700;border-radius:10px;display:flex;flex-direction:column;align-items:center;gap:4px;
   font-family:'Barlow Condensed',sans-serif;line-height:1}
@@ -1824,7 +1832,7 @@ function TeamView({ lg, setLg, toast }) {
     <div className="wrap">
       <div className="row sp" style={{ marginBottom: 12 }}>
         <div>
-          <div className="eyebrow">{season ? `Week ${week} lineup` : "Projected starters"}</div>
+          <div className="eyebrow">{season ? `Mock week ${week} lineup` : "Projected starters"}</div>
           <h1 style={{ fontSize: 28, marginTop: 3 }}>{lg.gms[u].name}</h1>
         </div>
         <div style={{ textAlign: "right" }}>
@@ -2129,7 +2137,7 @@ function SeasonView({ lg, setLg, toast, setTab }) {
           <button className="act" onClick={() => setTab && setTab("team")}>
             <div className="ico">LU</div>
             <div style={{ flex: 1 }}>
-              <h4>Set lineup</h4>
+              <h4>Mock lineup</h4>
               <div className="mini">{lineupWarn(lg, s, values) || "Starters look good for this week"}</div>
             </div>
             <div className="arw">›</div>
@@ -2138,7 +2146,7 @@ function SeasonView({ lg, setLg, toast, setTab }) {
           <button className="act b" onClick={() => setView("wire")}>
             <div className="ico">W</div>
             <div style={{ flex: 1 }}>
-              <h4>Waiver wire {claims.length > 0 && <span className="pill">{claims.length} queued</span>}</h4>
+              <h4>Mock waiver wire {claims.length > 0 && <span className="pill">{claims.length} queued</span>}</h4>
               <div className="mini">
                 {faabMode ? `$${s.faab[u]} left · ` : `Priority #${s.waiverOrder.indexOf(u) + 1} · `}
                 {topFA(lg, s)} is the top add
@@ -2150,8 +2158,8 @@ function SeasonView({ lg, setLg, toast, setTab }) {
           <button className="act g" onClick={() => setView("trade")}>
             <div className="ico">T</div>
             <div style={{ flex: 1 }}>
-              <h4>Propose a trade</h4>
-              <div className="mini">Build an offer to any of the {lg.settings.teams - 1} other teams and hear back</div>
+              <h4>Mock trade</h4>
+              <div className="mini">Offer a deal to any of the {lg.settings.teams - 1} simulated teams and hear back</div>
             </div>
             <div className="arw">›</div>
           </button>
@@ -2234,7 +2242,7 @@ function TradeDesk({ lg, setLg, values, toast }) {
       <>
         <div className="card">
           <div className="eyebrow">Step 1</div>
-          <h2 style={{ fontSize: 21, margin: "5px 0 6px" }}>Pick a trade partner</h2>
+          <h2 style={{ fontSize: 21, margin: "5px 0 6px" }}>Pick a mock trade partner</h2>
           <div className="mini">Each team's biggest hole is listed. Target the one that needs what you have spare.</div>
         </div>
         {others.map((g) => {
@@ -2297,7 +2305,7 @@ function TradeDesk({ lg, setLg, values, toast }) {
     <>
       <div className="row sp" style={{ marginBottom: 10 }}>
         <div>
-          <div className="eyebrow">Offer to</div>
+          <div className="eyebrow">Mock offer to</div>
           <h2 style={{ fontSize: 22, marginTop: 3 }}>{lg.gms[partner].name}</h2>
         </div>
         <button className="chip" onClick={() => setPartner(null)}>Change team</button>
@@ -2326,7 +2334,7 @@ function TradeDesk({ lg, setLg, values, toast }) {
       )}
 
       <button className="btn" disabled={!canSend || reply?.accept} onClick={send}>
-        {reply && !reply.accept ? "Send revised offer" : "Send offer"}
+        {reply && !reply.accept ? "Send revised mock offer" : "Send mock offer"}
       </button>
     </>
   );
@@ -2492,7 +2500,7 @@ function WireView({ lg, s, values, claims, setClaims, claimFor, setClaimFor, toa
       <div className="card">
         <div className="row sp">
           <div>
-            <div className="eyebrow">{faab ? "FAAB remaining" : "Waiver priority"}</div>
+            <div className="eyebrow">{faab ? "Mock FAAB remaining" : "Mock waiver priority"}</div>
             <div className="disp num" style={{ fontSize: 30, color: "var(--first)" }}>
               {faab ? `$${s.faab[u]}` : `#${s.waiverOrder.indexOf(u) + 1}`}
             </div>
@@ -2633,7 +2641,7 @@ function TradesView({ lg, toast }) {
   return (
     <div className="wrap">
       <div className="scroll-x" style={{ marginBottom: 12 }}>
-        {[["calc", "Calculator"], ["finder", "Trade finder"], ["shot", "From screenshot"]].map(([k, l]) => (
+        {[["calc", "Mock calculator"], ["finder", "Mock trade finder"], ["shot", "From screenshot"]].map(([k, l]) => (
           <button key={k} className={`chip ${mode === k ? "on" : ""}`} onClick={() => setMode(k)}>{l}</button>
         ))}
       </div>
@@ -3106,7 +3114,7 @@ function GMChat({ lg }) {
    with no mock league required. Saved separately from any league.
    ============================================================ */
 
-export const VERSION = "1.3.2";
+export const VERSION = "1.4.0";
 const MY_KEY = "huddle:myteam";
 
 const DEFAULT_MY = { ids: [], teams: 12, ppr: 1, superflex: false, name: "My Team", topPad: 0 };
@@ -3438,10 +3446,10 @@ function Settings({ my, save, toast, onWipe }) {
 
 function Hub({ go, my }) {
   const tiles = [
-    { k: "mock", cls: "", h: "Mock Season", d: "Snake draft against seven personalities, then play all 17 weeks of injuries, waivers and playoffs.", go: "Draft now" },
-    { k: "trade", cls: "b", h: "Trade Help", d: "Screenshot your roster, analyze any offer, and find deals both sides would actually take.", go: "Open" },
-    { k: "draft", cls: "g", h: "Draft Help", d: "Player A over player B with the reasoning, a value radar, and answers about your own team.", go: "Open" },
-    { k: "settings", cls: "m", h: "Settings", d: `Version ${VERSION} · save and restore your roster and leagues.`, go: "Open" },
+    { k: "trade", cls: "b", h: "Real Trades", d: "Your actual league. Screenshot your roster, analyze any offer, find deals both sides would take.", go: "Open" },
+    { k: "draft", cls: "g", h: "Real Draft", d: "Your actual draft. Player A over player B with the reasoning, plus a value radar.", go: "Open" },
+    { k: "mock", cls: "", h: "Mock Season", d: "Simulated. Snake draft against seven personalities, then play all 17 weeks.", go: "Draft now" },
+    { k: "settings", cls: "m", h: "Settings", d: `Version ${VERSION} · save and restore your data.`, go: "Open" },
   ];
   return (
     <div className="wrap top">
@@ -3468,10 +3476,11 @@ function Hub({ go, my }) {
               <div className="eyebrow">Saved roster</div>
               <div className="mini" style={{ marginTop: 3 }}>{my.ids.length} players · {my.teams}-team {my.ppr === 1 ? "PPR" : my.ppr === 0.5 ? "half PPR" : "standard"}</div>
             </div>
-            <button className="chip on" onClick={() => go("trade")}>Trade help</button>
+            <button className="chip on" onClick={() => go("trade")}>Real trades</button>
           </div>
         </div>
       )}
+      <div className="navpad" />
     </div>
   );
 }
@@ -3544,11 +3553,26 @@ export default function App() {
     setScreen("hub");
   };
 
-  const TITLES = { mock: "Mock Season", trade: "Trade Help", draft: "Draft Help", settings: "Settings" };
+  const TITLES = { mock: "Mock Season", trade: "Real Trades", draft: "Real Draft", settings: "Settings" };
 
   if (!recoveryReady || !myReady) {
     return <div className="hd"><style>{CSS}</style><div className="wrap"><div className="card"><div className="eyebrow">Huddle</div><h2 style={{ marginTop: 5 }}>Restoring your leagues…</h2><div className="mini">Checking the on-device recovery copy before the app opens.</div></div></div></div>;
   }
+
+  const TABS = [
+    ["hub", "Home"],
+    ["trade", "Trades"],
+    ["draft", "Draft"],
+    ["mock", "Mock"],
+    ["settings", "Settings"],
+  ];
+  const MOCK_TABS = [["draft", "Draft"], ["team", "Team"], ["season", "Season"], ["trades", "Trades"], ["tools", "Tools"]];
+
+  const goTab = (k) => {
+    if (k === "mock") { setScreen("mock"); return; }
+    if (lg) closeLeague();
+    setScreen(k);
+  };
 
   return (
     <div className={`hd${pwa ? " pwa" : ""}`} style={{ "--nudge": `${my.topPad || 0}px` }}>
@@ -3559,7 +3583,7 @@ export default function App() {
       {screen !== "hub" && (
         <>
           <div className="hdr">
-            <button className="chip" onClick={lg ? closeLeague : home}>← Back</button>
+            {lg && <button className="chip" onClick={closeLeague}>← Leagues</button>}
             <div style={{ flex: 1, minWidth: 0 }}>
               <div className="nm" style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                 {lg ? leagueHeaderLabel(lg) : TITLES[screen]}
@@ -3568,13 +3592,25 @@ export default function App() {
                 {lg
                   ? (lg.season ? (lg.season.champion != null ? "Season complete" : `Week ${lg.season.week}`)
                     : draftDone(lg) ? "Draft complete" : `Pick ${lg.picks.length + 1} of ${lg.order.length}`)
-                  : screen === "mock" ? "Pick up where you left off" : `Huddle ${VERSION}`}
+                  : screen === "mock" ? "Simulated league" : screen === "settings" ? `Huddle ${VERSION}` : "Your real league"}
               </div>
             </div>
-            {lg && <button className="chip" onClick={home}>Home</button>}
           </div>
 
-          <div style={{ paddingBottom: 8 }}>
+          {screen === "mock" && lg && (
+            <div className="subnav">
+              {MOCK_TABS.map(([k, l]) => {
+                const alert = k === "season" && lg.season?.tradeOffer;
+                return (
+                  <button key={k} className={`snb ${tab === k ? "on" : ""}`} onClick={() => setTab(k)}>
+                    {l}{alert ? <span className="badge">1</span> : null}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          <div>
             {screen === "mock" && !lg && <MockHome onOpen={openLeague} onCreate={(l) => { setLg(l); setTab("draft"); }} />}
             {screen === "mock" && lg && (
               <>
@@ -3588,26 +3624,27 @@ export default function App() {
             {screen === "trade" && <TradeHelp my={my} save={saveMy} toast={toast} />}
             {screen === "draft" && <DraftHelp my={my} save={saveMy} toast={toast} />}
             {screen === "settings" && <Settings my={my} save={saveMy} toast={toast} onWipe={() => { recoveryDel(RECOVERY_ACTIVE); setLg(null); }} />}
+            <div className="navpad" />
           </div>
-
-          {screen === "mock" && lg && (
-            <div className="tabs">
-              {[["draft", "Draft"], ["team", "Team"], ["season", "Season"], ["trades", "Trades"], ["tools", "Tools"]].map(([k, l]) => {
-                const alert = k === "season" && lg.season?.tradeOffer ? 1 : 0;
-                return (
-                  <button key={k} className={`tab ${tab === k ? "on" : ""}`} onClick={() => setTab(k)}>
-                    <span style={{ position: "relative" }}>
-                      <span className="dot" />
-                      {alert ? <span className="badge">1</span> : null}
-                    </span>
-                    {l}
-                  </button>
-                );
-              })}
-            </div>
-          )}
         </>
       )}
+
+      <div className="tabs">
+        {TABS.map(([k, l]) => {
+          const on = screen === k;
+          const alert = k === "mock" && lg?.season?.tradeOffer ? 1 : 0;
+          return (
+            <button key={k} className={`tab ${on ? "on" : ""}`} onClick={() => goTab(k)}>
+              <span style={{ position: "relative" }}>
+                <span className="dot" />
+                {alert ? <span className="badge">1</span> : null}
+              </span>
+              {l}
+            </button>
+          );
+        })}
+      </div>
+
       <Toast msg={toastMsg} />
     </div>
   );
