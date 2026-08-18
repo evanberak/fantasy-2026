@@ -271,6 +271,47 @@ check("draft recap survives post-draft roster changes", () => {
   return html.length > 100 ? null : "recap rendered almost nothing";
 });
 
+check("no component calls a hook after an early return", () => {
+  /* The bug that blanks a screen with "Rendered more hooks than during the
+     previous render". Catches both forms:
+         if (x == null) return null;
+         if (x == null) { ... return (...); }
+     Uses indentation, since component bodies here are indented two spaces and
+     a block early-return indents its return to four. */
+  const lines = src.split("\n");
+  const HOOK = /^ {2}(?:const|let|\s)*.*\b(useState|useEffect|useMemo|useCallback|useRef|useContext|useKeyboardInset|useMyTeam|useLiveInjuries|usePlayerCard)\s*\(/;
+  let i = 0;
+  while (i < lines.length) {
+    const m = /^(?:export )?function ([A-Z]\w*)\(/.exec(lines[i]);
+    if (!m) { i++; continue; }
+    let depth = 0, started = false, early = null, j = i;
+    for (; j < lines.length; j++) {
+      const line = lines[j];
+      const clean = line.replace(/"[^"]*"|'[^']*'|`[^`]*`/g, "");
+      if (!started && clean.includes("{")) started = true;
+      depth += (clean.match(/\{/g) || []).length - (clean.match(/\}/g) || []).length;
+      if (started && depth <= 0 && j > i) break;
+      if (j <= i) continue;
+
+      // single line: `if (...) return x;` or a bare `return` at body level
+      if (early === null && /^ {2}(if\s*\(.*\)\s*return\b|return\b)/.test(line)) early = j + 1;
+
+      // block form: `if (...) {` at body level containing a return
+      if (early === null && /^ {2}if\s*\(.*\)\s*\{\s*$/.test(line)) {
+        for (let k = j + 1; k < lines.length && !/^ {2}\}/.test(lines[k]); k++) {
+          if (/^ {4}return\b/.test(lines[k])) { early = k + 1; break; }
+        }
+      }
+
+      if (early !== null && HOOK.test(line)) {
+        return `${m[1]} calls a hook on line ${j + 1} after returning on line ${early}`;
+      }
+    }
+    i = j + 1;
+  }
+  return null;
+});
+
 console.log("\nScreens");
 
 const noop = () => {};

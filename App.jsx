@@ -2891,6 +2891,23 @@ function TradeDesk({ lg, setLg, values, toast }) {
     })).sort((a, b) => b.fits - a.fits);
   }, [lg, values, u]);
 
+  /* Every hook must run on every render. This memo used to sit below the
+     early return for the partner list, so picking a partner changed the hook
+     count and React tore the whole screen down. Keep hooks above any return. */
+  /* Building an offer piece by piece is slow. These are packages this partner
+     would plausibly accept, computed from both rosters, so a fair deal is two
+     taps away and the manual builder stays available underneath. */
+  const suggestions = useMemo(() => {
+    if (partner == null) return [];
+    const single = { [partner]: lg.rosters[partner] };
+    return findTrades(lg, lg.rosters[u], values, single)
+      // predict the answer rather than hiding deals, so nothing looks broken
+      // when a partner is simply hard to trade with
+      .map((t) => ({ ...t, reply: evaluateOffer(lg, lg.season, partner, t.give, t.getIds) }))
+      .sort((a, b) => (b.reply.accept - a.reply.accept) || (b.myGain - a.myGain))
+      .slice(0, 3);
+  }, [partner, lg, values, u]);
+
   if (partner == null) {
     return (
       <>
@@ -2920,19 +2937,6 @@ function TradeDesk({ lg, setLg, values, toast }) {
   const v = tradeVerdict(mine, theirs, values);
   const canSend = mine.length > 0 && theirs.length > 0;
 
-  /* Building an offer piece by piece is slow. These are packages this partner
-     would plausibly accept, computed from both rosters, so a fair deal is two
-     taps away and the manual builder stays available underneath. */
-  const suggestions = useMemo(() => {
-    if (partner == null) return [];
-    const single = { [partner]: lg.rosters[partner] };
-    return findTrades(lg, lg.rosters[u], values, single)
-      // predict the answer rather than hiding deals, so nothing looks broken
-      // when a partner is simply hard to trade with
-      .map((t) => ({ ...t, reply: evaluateOffer(lg, lg.season, partner, t.give, t.getIds) }))
-      .sort((a, b) => (b.reply.accept - a.reply.accept) || (b.myGain - a.myGain))
-      .slice(0, 3);
-  }, [partner, lg, values, u]);
 
   const send = () => {
     const res = evaluateOffer(lg, lg.season, partner, mine, theirs);
@@ -4010,7 +4014,7 @@ function GMChat({ lg }) {
    with no mock league required. Saved separately from any league.
    ============================================================ */
 
-export const VERSION = "1.9.2";
+export const VERSION = "1.9.3";
 const MY_KEY = "huddle:myteam";
 
 const DEFAULT_MY = { ids: [], teams: 12, ppr: 1, superflex: false, name: "My Team", topPad: 0, liveInjuries: true };
@@ -4960,6 +4964,34 @@ function Hub({ go, my }) {
   );
 }
 
+/* A crash inside any screen used to unmount the whole tree and leave a black
+   screen with no explanation. This catches it, shows what broke, and lets the
+   person get back to a working screen without losing saved data. */
+class Boundary extends React.Component {
+  constructor(props) { super(props); this.state = { err: null }; }
+  static getDerivedStateFromError(err) { return { err }; }
+  componentDidCatch(err, info) { console.error("Huddle crashed:", err, info); }
+  render() {
+    if (!this.state.err) return this.props.children;
+    const msg = String(this.state.err && this.state.err.message || this.state.err);
+    return (
+      <div className="wrap top">
+        <div className="card" style={{ borderColor: "var(--red)" }}>
+          <div className="eyebrow" style={{ color: "var(--red)" }}>Something broke</div>
+          <h2 style={{ fontSize: 26, margin: "6px 0 8px" }}>This screen hit an error</h2>
+          <div className="mini" style={{ marginBottom: 10 }}>
+            Your saved leagues and roster are untouched. Go back and try another tab.
+          </div>
+          <div className="mini" style={{ fontFamily: "monospace", color: "var(--chalk)", marginBottom: 12, wordBreak: "break-word" }}>
+            {msg}
+          </div>
+          <button className="btn" onClick={() => this.setState({ err: null })}>Try again</button>
+        </div>
+      </div>
+    );
+  }
+}
+
 export default function App() {
   const [screen, setScreen] = useState("hub");
   const [lg, setLg] = useState(null);
@@ -5075,7 +5107,7 @@ export default function App() {
     <div className={`hd${pwa ? " pwa" : ""}`} style={{ "--nudge": `${my.topPad || 0}px` }}>
       <style>{CSS}</style>
 
-      {screen === "hub" && <Hub go={setScreen} my={my} />}
+      {screen === "hub" && <Boundary><Hub go={setScreen} my={my} /></Boundary>}
 
       {screen !== "hub" && (
         <>
@@ -5108,6 +5140,7 @@ export default function App() {
           )}
 
           <div>
+            <Boundary key={`${screen}:${tab}:${lg ? lg.id : "none"}`}>
             {screen === "mock" && !lg && <MockHome onOpen={openLeague} onCreate={(l) => { setLg(l); setTab("draft"); }} customScoring={my.scoring ?? my.ppr} />}
             {screen === "mock" && lg && (
               <>
@@ -5121,6 +5154,7 @@ export default function App() {
             {screen === "trade" && <TradeHelp my={my} save={saveMy} toast={toast} />}
             {screen === "draft" && <DraftHelp my={my} save={saveMy} toast={toast} />}
             {screen === "settings" && <Settings my={my} save={saveMy} toast={toast} injuries={injuries} onWipe={() => { recoveryDel(RECOVERY_ACTIVE); setLg(null); }} />}
+            </Boundary>
             <div className="navpad" />
           </div>
         </>
@@ -5142,7 +5176,7 @@ export default function App() {
         })}
       </div>
 
-      {cardId != null && <PlayerCardSheet id={cardId} lg={cardLg} onClose={() => setCardId(null)} />}
+      {cardId != null && <Boundary key={`card:${cardId}`}><PlayerCardSheet id={cardId} lg={cardLg} onClose={() => setCardId(null)} /></Boundary>}
       <Toast msg={toastMsg} />
     </div>
     </PlayerCtx.Provider>

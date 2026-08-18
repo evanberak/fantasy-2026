@@ -125,13 +125,19 @@ and carries on. Toggle it in Settings.
 ## Verifying a change
 
 ```bash
-npm test
+npm run test:all
 ```
 
-Renders every screen and exercises the engine: scoring, drafting, the season
-simulation, waivers, trades and the schedule. Compiling is not enough, because
-an undefined variable inside a component only surfaces when it renders. Run this
-after any edit.
+Two suites, and both matter.
+
+`npm test` renders every screen and exercises the engine. `npm run test:click`
+mounts screens in a real DOM and **taps every row**, which catches a class of bug
+rendering alone cannot: React throws "Rendered more hooks than during the previous
+render" only when a click sends a component down a different path, and the result
+is a blank screen with no message. That is what happened when tapping a trade
+partner.
+
+Run both after any edit.
 
 ---
 
