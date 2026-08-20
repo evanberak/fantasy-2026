@@ -129,7 +129,8 @@ await clickThrough("Draft help tabs", React.createElement(M.DraftHelp, { my, sav
 await clickThrough("Settings rows", React.createElement(M.Settings, { my, save: noop, toast: noop, onWipe: noop }), ".act");
 await clickThrough("Hub tiles", React.createElement(M.Hub, { go: noop, my }), ".tile");
 await clickThrough("Scoring presets", React.createElement(M.ScoringEditor, { scoring: 1, onChange: noop, title: "s" }), ".chip");
-await clickThrough("Player card", React.createElement(M.PlayerCardSheet, { id: league.rosters[5][0], lg: league, onClose: noop }), ".plr");
+await clickThrough("Player card tabs", React.createElement(M.PlayerCardSheet, { id: league.rosters[5][0], lg: league, onClose: noop }), ".seg");
+await clickThrough("Player card rows", React.createElement(M.PlayerCardSheet, { id: league.rosters[5][0], lg: league, onClose: noop }), ".plr");
 
 try { unlinkSync("./.click.jsx"); unlinkSync("./.click.mjs"); } catch { }
 console.log(failures ? `\n${failures} interaction failure(s)\n` : "\nAll interactions fine\n");

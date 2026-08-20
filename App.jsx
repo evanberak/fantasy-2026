@@ -1573,6 +1573,10 @@ const CSS = `
 .act.b .ico{color:var(--los)} .act.g .ico{color:var(--green)} .act.r .ico{color:var(--red)}
 .act h4{font-family:'Barlow Condensed',sans-serif;font-size:22px;text-transform:uppercase;margin:0 0 2px;letter-spacing:.02em}
 .act .arw{color:var(--mute);font-size:20px;flex:none}
+.wk{display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--line)}
+.wk:last-child{border-bottom:none}
+.wk.po{background:rgba(255,212,0,.05)}
+.wkn{width:26px;flex:none;font-family:'JetBrains Mono',monospace;font-size:11.5px;color:var(--mute);text-align:right}
 .rng{width:78px;flex:none;text-align:right}
 .rngbar{height:4px;background:var(--panel2);border-radius:99px;position:relative;margin:4px 0 3px;overflow:hidden}
 .rngbar>i{position:absolute;top:0;bottom:0;background:var(--first);border-radius:99px;opacity:.55}
@@ -4014,7 +4018,7 @@ function GMChat({ lg }) {
    with no mock league required. Saved separately from any league.
    ============================================================ */
 
-export const VERSION = "1.9.3";
+export const VERSION = "1.10.0";
 const MY_KEY = "huddle:myteam";
 
 const DEFAULT_MY = { ids: [], teams: 12, ppr: 1, superflex: false, name: "My Team", topPad: 0, liveInjuries: true };
@@ -4510,6 +4514,109 @@ function Tap({ id, children, style }) {
   );
 }
 
+/* Full season schedule for one player: who he faces every week, what he
+   already scored, and what he projects the rest of the way. This is the view
+   that actually settles a waiver claim or a trade, because a good player with
+   three tough playoff matchups is worth less than his average suggests. */
+function SeasonSchedule({ p, season, values }) {
+  const rows = [];
+  const logByWeek = {};
+  const entry = season?.actual?.[p.id];
+  (entry?.log || []).forEach((x, i) => {
+    const rec = typeof x === "number" ? { w: i + 1, pts: x } : x;
+    logByWeek[rec.w] = rec.pts;
+  });
+
+  const now = season ? season.week : 1;
+  let restTotal = 0, playoffTotal = 0, tough = 0, great = 0;
+
+  for (let w = 1; w <= 17; w++) {
+    if (p.bye === w) { rows.push({ w, bye: true }); continue; }
+    const played = season && w < now;
+    const opp = season ? oppFor(season, p.team, w) : null;
+    const outlook = season ? weekOutlook(p, season, w, values) : null;
+    const projected = outlook && !outlook.status
+      ? outlook.mean
+      : (values[p.id]?.ppg ?? p.base / 17);
+    const actual = played ? logByWeek[w] : undefined;
+    const injured = played && actual === undefined;
+
+    if (!played) {
+      restTotal += projected;
+      if (w >= 15) playoffTotal += projected;
+      if (outlook?.grade === "tough" || outlook?.grade === "hard") tough++;
+      if (outlook?.grade === "great" || outlook?.grade === "good") great++;
+    }
+    rows.push({ w, opp, played, actual, injured, projected, grade: outlook?.grade || "even" });
+  }
+
+  const max = Math.max(...rows.map((r) => (r.bye ? 0 : (r.played ? (r.actual ?? 0) : r.projected))), 1);
+
+  return (
+    <>
+      <div className="grid3" style={{ marginBottom: 11 }}>
+        <div className="stat">
+          <b className="num">{Math.round(restTotal)}</b>
+          <span className="eyebrow">rest of season</span>
+        </div>
+        <div className="stat">
+          <b className="num">{Math.round(playoffTotal)}</b>
+          <span className="eyebrow">weeks 15 to 17</span>
+        </div>
+        <div className="stat">
+          <b className="num">{great}/{tough}</b>
+          <span className="eyebrow">good / tough left</span>
+        </div>
+      </div>
+
+      <div className="eyebrow" style={{ marginBottom: 7 }}>Week by week</div>
+      <div style={{ maxHeight: 340, overflowY: "auto", WebkitOverflowScrolling: "touch" }}>
+        {rows.map((r) => {
+          if (r.bye) {
+            return (
+              <div key={r.w} className="wk">
+                <div className="wkn">{r.w}</div>
+                <div style={{ flex: 1 }} className="mini">Bye week</div>
+                <div className="mini">off</div>
+              </div>
+            );
+          }
+          const value = r.played ? (r.actual ?? 0) : r.projected;
+          const width = Math.max(2, (value / max) * 100);
+          return (
+            <div key={r.w} className={`wk${r.w >= 15 ? " po" : ""}`}>
+              <div className="wkn">{r.w}</div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div className="row sp" style={{ marginBottom: 3 }}>
+                  <span className="mini" style={{ color: "var(--chalk)" }}>
+                    {r.opp ? `vs ${r.opp}` : "opponent set at kickoff"}
+                    {r.w >= 15 ? " · playoffs" : ""}
+                  </span>
+                  <span className="num" style={{ fontSize: 12.5, fontWeight: 700, color: r.played ? "var(--chalk)" : "var(--mute)" }}>
+                    {r.injured ? "out" : value.toFixed(1)}
+                  </span>
+                </div>
+                <div className="rngbar" style={{ margin: 0 }}>
+                  <i style={{ left: 0, right: `${100 - width}%`, opacity: r.played ? 0.95 : 0.45 }} />
+                </div>
+              </div>
+              {!r.played && r.opp && (
+                <div className={`opp o-${r.grade}`} style={{ width: 46, textAlign: "right" }}>
+                  {r.grade === "even" ? "" : r.grade}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <div className="mini" style={{ marginTop: 8 }}>
+        Solid bars are weeks already played. Faded bars are projections, adjusted for the defense he faces.
+        {season ? "" : " Opponents appear once the season kicks off."}
+      </div>
+    </>
+  );
+}
+
 function GameLog({ p, season, values }) {
   const a = season?.actual?.[p.id];
   const raw = a?.log || [];
@@ -4551,6 +4658,7 @@ function PlayerCardSheet({ id, lg, onClose }) {
   const season = lg?.season || null;
   // hooks run every render, never behind a conditional return
   const values = useMemo(() => buildValues(lg, season), [lg, season && season.week]);
+  const [tab, setTab] = useState("schedule");
   if (!p) return null;
   const v = values[p.id];
   const week = season ? season.week : null;
@@ -4632,7 +4740,18 @@ function PlayerCardSheet({ id, lg, onClose }) {
         </div>
       )}
 
-      {season && <div className="card" style={{ marginBottom: 11 }}><GameLog p={p} season={season} values={values} /></div>}
+      <div className="segs" style={{ marginBottom: 11 }}>
+        {[["schedule", "Schedule"], ["log", "Game log"]].map(([k, l]) => (
+          <button key={k} className={`seg ${tab === k ? "on" : ""}`} onClick={() => setTab(k)}>{l}</button>
+        ))}
+      </div>
+      <div className="card" style={{ marginBottom: 11 }}>
+        {tab === "schedule"
+          ? <SeasonSchedule p={p} season={season} values={values} />
+          : season
+            ? <GameLog p={p} season={season} values={values} />
+            : <div className="mini">No games played yet. Start the season to build a game log.</div>}
+      </div>
 
       <div className="grid3" style={{ marginBottom: 11 }}>
         <div className="stat"><b className="num">{v.ppg.toFixed(1)}</b><span className="eyebrow">proj ppg</span></div>
