@@ -603,11 +603,12 @@ export function makeLeague(cfg) {
     id: uid(),
     name: cfg.name || `${teams}-Team Mock`,
     createdAt: Date.now(),
-    settings: { teams, rounds, ppr, scoring: resolveScoring(cfg.scoring ?? ppr), superflex, userSlot, faab: cfg.faabBudget ?? 100, waiverMode: cfg.waiverMode || "faab" },
+    settings: { teams, rounds, ppr, scoring: resolveScoring(cfg.scoring ?? ppr), superflex, userSlot, faab: cfg.faabBudget ?? 100, waiverMode: cfg.waiverMode || "faab", irSlots: cfg.irSlots ?? 1 },
     gms,
     order,
     picks: [],
     rosters: Object.fromEntries(gms.map((g) => [g.idx, []])),
+    ir: Object.fromEntries(gms.map((g) => [g.idx, []])),
     season: null,
     keeperNotes: "",
   };
@@ -990,6 +991,15 @@ export function oppFor(state, team, week) {
 }
 
 // write the schedule back into an older save so it persists from now on
+// older saves predate injured reserve
+export function ensureIR(lg) {
+  if (!lg) return false;
+  if (lg.settings && lg.settings.irSlots == null) lg.settings.irSlots = 1;
+  if (!lg.ir) { lg.ir = Object.fromEntries(lg.gms.map((g) => [g.idx, []])); return true; }
+  for (const g of lg.gms) if (!lg.ir[g.idx]) lg.ir[g.idx] = [];
+  return false;
+}
+
 export function ensureSchedule(lg) {
   if (lg?.season && !lg.season.nfl?.length) {
     lg.season.nfl = buildNFLSchedule(lg.season.seed ?? 1);
@@ -1220,6 +1230,70 @@ export function startSeason(lg, seed = Date.now()) {
   };
 }
 
+/* Injured reserve.
+   An IR slot holds a hurt player without using a bench spot, which is what
+   real leagues do so one bad hamstring does not cost you a roster spot for a
+   month. Players on IR cannot be started, and only genuinely injured players
+   are eligible. Older saves have no ir field, so every read tolerates that. */
+export const irSlots = (lg) => lg?.settings?.irSlots ?? 0;
+export const irList = (lg, gmIdx) => (lg.ir && lg.ir[gmIdx]) || [];
+
+// the players a team can actually use this week
+export function activeRoster(lg, gmIdx) {
+  const stashed = new Set(irList(lg, gmIdx));
+  return (lg.rosters[gmIdx] || []).filter((id) => !stashed.has(id));
+}
+
+// is this player hurt enough to stash, by simulation or by real report
+export function irEligible(state, playerId) {
+  if (state?.injuries?.[playerId] > 0) return true;
+  const live = injuryFor(playerId);
+  return !!(live && !live.startable);
+}
+
+export function canStashIR(lg, state, gmIdx, playerId) {
+  if (irSlots(lg) <= 0) return { ok: false, why: "This league has no IR slots." };
+  if (irList(lg, gmIdx).length >= irSlots(lg)) return { ok: false, why: "All IR slots are full." };
+  if (!irEligible(state, playerId)) return { ok: false, why: "Only injured players can go on IR." };
+  return { ok: true };
+}
+
+// room to add a player without dropping anyone
+export function openRosterSpots(lg, gmIdx) {
+  return lg.settings.rounds - activeRoster(lg, gmIdx).length;
+}
+
+/* Healed players cannot sit on IR forever. At each week rollover they come
+   back automatically when there is a bench spot, and are flagged when there
+   is not, which mirrors how a real league forces an activation. */
+export function reconcileIR(lg, state) {
+  const moved = [];
+  for (const g of lg.gms) {
+    if (!lg.ir?.[g.idx]?.length) continue;
+    for (const id of [...lg.ir[g.idx]]) {
+      if (irEligible(state, id)) continue;
+      // recheck space after each activation, not once for the whole group
+      if (openRosterSpots(lg, g.idx) <= 0) continue;
+      lg.ir[g.idx] = lg.ir[g.idx].filter((x) => x !== id);
+      moved.push({ gm: g.idx, id });
+    }
+  }
+  return moved;
+}
+
+// CPU teams stash their injured so their bench stays useful
+export function autoStashIR(lg, state) {
+  if (irSlots(lg) <= 0) return;
+  for (const g of lg.gms) {
+    if (g.isUser) continue;
+    if (!lg.ir[g.idx]) lg.ir[g.idx] = [];
+    for (const id of activeRoster(lg, g.idx)) {
+      if (lg.ir[g.idx].length >= irSlots(lg)) break;
+      if (irEligible(state, id)) lg.ir[g.idx].push(id);
+    }
+  }
+}
+
 export function optimalLineup(lg, state, ids, week, values) {
   const slots = lineupFor(lg.settings);
   const avail = ids
@@ -1302,13 +1376,15 @@ export function simWeek(lg, state, userLineup) {
   for (const [a, b] of pairs) {
     for (const t of [a, b]) {
       const isUser = lg.gms[t].isUser;
-      let lu = isUser && userLineup ? userLineup.slice() : optimalLineup(lg, st, lg.rosters[t], week, values);
+      const usable = activeRoster(lg, t);
+      let lu = isUser && userLineup ? userLineup.slice() : optimalLineup(lg, st, usable, week, values);
       // patch invalid user slots
       const slots = lineupFor(lg.settings);
       const seen = new Set();
       lu = lu.map((id, i) => {
         const p = id ? BY_ID[id] : null;
-        const ok = p && slots[i].accepts.includes(p.pos) && lg.rosters[t].includes(id) && !seen.has(id);
+        // a stashed player cannot be started, even if the saved lineup names him
+        const ok = p && slots[i].accepts.includes(p.pos) && usable.includes(id) && !seen.has(id);
         if (ok) { seen.add(id); return id; }
         return null;
       });
@@ -1349,6 +1425,16 @@ export function simWeek(lg, state, userLineup) {
 
 /* -------- waivers -------- */
 
+/* Who actually leaves when a claim lands. Returns null when the roster has an
+   open spot, otherwise the least valuable active player, chosen fresh so two
+   claims in one week cannot both drop the same person. */
+export function resolveDrop(lg, gmIdx, values, proposed) {
+  if (openRosterSpots(lg, gmIdx) > 0) return null;
+  const active = activeRoster(lg, gmIdx);
+  if (proposed && active.includes(proposed)) return proposed;
+  return active.slice().sort((a, b) => values[a].ppg - values[b].ppg)[0] || null;
+}
+
 export function waiverBoard(lg, state, limit = 40) {
   const values = buildValues(lg, state);
   return state.freeAgents
@@ -1372,16 +1458,18 @@ export function runWaivers(lg, state, userClaims) {
   const board = waiverBoard(lg, state, 26);
   const bids = [];
   // AI bids
+  autoStashIR(lg, state);   // CPU teams clear their injured into IR first
   for (const g of lg.gms) {
     if (g.isUser) continue;
-    const roster = lg.rosters[g.idx];
+    const roster = activeRoster(lg, g.idx);
     const ranked = roster.slice().sort((a, b) => values[a].ppg - values[b].ppg);
-    const worst = ranked[0];
+    // with an open spot there is nothing to drop
+    const worst = openRosterSpots(lg, g.idx) > 0 ? null : ranked[0];
     const budget = state.faab[g.idx];
     let made = 0;
     for (const item of board) {
       if (made >= 2 || budget <= 0) break;
-      const gain = item.v.ppg + item.hot - values[worst].ppg;
+      const gain = item.v.ppg + item.hot - (worst ? values[worst].ppg : 0);
       if (gain < 1.1) continue;
       if (Math.random() > 0.55) continue;
       const bid = Math.max(1, Math.min(budget, Math.round(gain * (2 + Math.random() * 5))));
@@ -1404,12 +1492,21 @@ export function runWaivers(lg, state, userClaims) {
     if (win.bid > state.faab[win.gm]) continue;
     taken.add(Number(pid));
     state.faab[win.gm] -= win.bid;
-    lg.rosters[win.gm] = lg.rosters[win.gm].filter((x) => x !== win.drop);
+    /* Bids were priced against the roster as it looked at the start of the
+       week. A team winning two claims would otherwise apply a stale drop twice
+       and end up over the limit, so the drop is resolved here, against the
+       roster as it stands right now. */
+    const drop = resolveDrop(lg, win.gm, values, win.drop);
+    if (drop) {
+      lg.rosters[win.gm] = lg.rosters[win.gm].filter((x) => x !== drop);
+      if (lg.ir?.[win.gm]) lg.ir[win.gm] = lg.ir[win.gm].filter((x) => x !== drop);
+    }
+    win.drop = drop;
     lg.rosters[win.gm].push(Number(pid));
     state.freeAgents = state.freeAgents.filter((x) => x !== Number(pid));
     if (win.drop) state.freeAgents.push(win.drop);
     results.push({
-      gm: win.gm, add: Number(pid), drop: win.drop, bid: win.bid,
+      gm: win.gm, add: Number(pid), drop, bid: win.bid,
       losers: list.slice(1).map((l) => ({ gm: l.gm, bid: l.bid })),
     });
     // winner drops to back of tiebreak order
@@ -1430,19 +1527,25 @@ function runPriorityWaivers(lg, state, userClaims) {
   for (const gm of order) {
     const board = waiverBoard(lg, state, 22);
     if (!board.length) break;
-    const roster = lg.rosters[gm];
+    const roster = activeRoster(lg, gm);
     const ranked = roster.slice().sort((a, b) => values[a].ppg - values[b].ppg);
     let claim = null;
     if (wanted[gm]?.length) {
       const c = wanted[gm].find((x) => state.freeAgents.includes(x.id));
       if (c) claim = { id: c.id, drop: c.drop };
     } else if (!lg.gms[gm].isUser) {
-      const worst = ranked[0];
-      const target = board.find((b) => b.v.ppg + b.hot - values[worst].ppg > 1.4);
+      const worst = openRosterSpots(lg, gm) > 0 ? null : ranked[0];
+      const target = board.find((b) => b.v.ppg + b.hot - (worst ? values[worst].ppg : 0) > 1.4);
       if (target && Math.random() < 0.5) claim = { id: target.p.id, drop: worst };
     }
     if (!claim) continue;
-    lg.rosters[gm] = lg.rosters[gm].filter((x) => x !== claim.drop).concat(claim.id);
+    const drop = resolveDrop(lg, gm, values, claim.drop);
+    if (drop) {
+      lg.rosters[gm] = lg.rosters[gm].filter((x) => x !== drop);
+      if (lg.ir?.[gm]) lg.ir[gm] = lg.ir[gm].filter((x) => x !== drop);
+    }
+    claim.drop = drop;
+    lg.rosters[gm] = lg.rosters[gm].concat(claim.id);
     state.freeAgents = state.freeAgents.filter((x) => x !== claim.id);
     if (claim.drop) state.freeAgents.push(claim.drop);
     state.waiverOrder = [...state.waiverOrder.filter((o) => o !== gm), gm];
@@ -1950,7 +2053,7 @@ function MockHome({ onOpen, onCreate, customScoring }) {
   const [saved, setSaved] = useState([]);
   const [cfg, setCfg] = useState({
     teams: 12, rounds: 15, ppr: 1, superflex: false, userSlot: 5, teamName: "My Team", name: "",
-    waiverMode: "faab", faabBudget: 100,
+    waiverMode: "faab", faabBudget: 100, irSlots: 1,
   });
   useEffect(() => {
     ensureRecoveryRestored().then(() => store.get("huddle:index")).then((v) => setSaved(v || []));
@@ -2054,6 +2157,24 @@ function MockHome({ onOpen, onCreate, customScoring }) {
           <div className="eyebrow" style={{ marginBottom: 4 }}>Team name</div>
           <input value={cfg.teamName} onChange={(e) => setCfg({ ...cfg, teamName: e.target.value })} />
         </div>
+        <div style={{ marginBottom: 9 }}>
+          <div className="eyebrow" style={{ marginBottom: 4 }}>Injured reserve slots</div>
+          <div className="grid2">
+            {[0, 1, 2, 3].map((n) => (
+              <button key={n} className={`chip ${(cfg.irSlots ?? 1) === n ? "on" : ""}`}
+                style={{ padding: "10px 8px", textAlign: "center", display: "block" }}
+                onClick={() => setCfg({ ...cfg, irSlots: n })}>
+                {n === 0 ? "None" : `${n} slot${n > 1 ? "s" : ""}`}
+              </button>
+            ))}
+          </div>
+          <div className="mini" style={{ marginTop: 6 }}>
+            {(cfg.irSlots ?? 1) === 0
+              ? "Injured players take up a bench spot like anyone else."
+              : "Injured players can be stashed off the bench. They cannot be started, and heal back automatically when there is room."}
+          </div>
+        </div>
+
         <div style={{ marginBottom: 9 }}>
           <div className="eyebrow" style={{ marginBottom: 4 }}>Waivers</div>
           <div className="grid2">
@@ -2507,7 +2628,36 @@ function TeamView({ lg, setLg, toast }) {
     });
   };
 
-  const bench = ids.filter((id) => !lineup.includes(id));
+  const stashed = irList(lg, u);
+  const bench = ids.filter((id) => !lineup.includes(id) && !stashed.includes(id));
+
+  const moveToIR = (id) => {
+    const check = canStashIR(lg, season, u, id);
+    if (!check.ok) { toast(check.why); return; }
+    setLg((prev) => {
+      const next = JSON.parse(JSON.stringify(prev));
+      next.ir = next.ir || {};
+      next.ir[u] = [...(next.ir[u] || []), id];
+      // drop him from the lineup if he was in it
+      if (next.season?.lineups?.[week]) {
+        next.season.lineups[week] = next.season.lineups[week].map((x) => (x === id ? null : x));
+      } else if (next.preseasonLineup) {
+        next.preseasonLineup = next.preseasonLineup.map((x) => (x === id ? null : x));
+      }
+      return next;
+    });
+    toast(`${BY_ID[id].name} moved to IR`);
+  };
+
+  const activate = (id) => {
+    if (openRosterSpots(lg, u) <= 0) { toast("No bench room. Drop someone first."); return; }
+    setLg((prev) => {
+      const next = JSON.parse(JSON.stringify(prev));
+      next.ir[u] = (next.ir[u] || []).filter((x) => x !== id);
+      return next;
+    });
+    toast(`${BY_ID[id].name} activated`);
+  };
   const projTotal = lineup.reduce((s, id) => s + (id ? values[id].ppg : 0), 0);
 
   if (!ids.length) return <Empty text="Draft a team first. Head to the Draft tab." />;
@@ -2565,15 +2715,52 @@ function TeamView({ lg, setLg, toast }) {
           return <PlayerRow key={id} p={p}
             tag={out ? { c: "t-out", t: `OUT ${season.injuries[id] > 20 ? "SEA" : season.injuries[id] + "w"}` } : p.bye === week ? { c: "t-bye", t: "BYE" } : null}
             sub={season ? `${p.team}${oppLabel(p, season, week, values)}` : `${p.team} · Bye ${p.bye || "TBD"}`}
-            right={season
-              ? <RangeCell p={p} season={season} week={week} values={values} />
-              : <div style={{ textAlign: "right" }}>
-                  <div className="num" style={{ fontSize: 13, fontWeight: 700 }}>{values[id].ppg.toFixed(1)}</div>
-                  <div className="sub">ppg</div>
-                </div>} />;
+            right={
+              <div className="row" style={{ gap: 7 }}>
+                {irSlots(lg) > 0 && irEligible(season, id) && stashed.length < irSlots(lg) && (
+                  <button className="chip" onClick={(e) => { e.stopPropagation(); moveToIR(id); }}>To IR</button>
+                )}
+                {season
+                  ? <RangeCell p={p} season={season} week={week} values={values} />
+                  : <div style={{ textAlign: "right" }}>
+                      <div className="num" style={{ fontSize: 13, fontWeight: 700 }}>{values[id].ppg.toFixed(1)}</div>
+                      <div className="sub">ppg</div>
+                    </div>}
+              </div>} />;
         })}
         {!bench.length && <div style={{ padding: 16 }} className="mini">Bench is empty.</div>}
       </div>
+
+      {irSlots(lg) > 0 && (
+        <>
+          <div className="row sp" style={{ margin: "14px 0 7px" }}>
+            <div className="eyebrow">Injured reserve</div>
+            <div className="eyebrow">{stashed.length} of {irSlots(lg)} used</div>
+          </div>
+          <div className="card tight">
+            {stashed.map((id) => {
+              const p = BY_ID[id];
+              const healed = !irEligible(season, id);
+              return (
+                <PlayerRow key={id} p={p}
+                  tag={healed ? { c: "t-up", t: "READY" } : { c: "t-out", t: "IR" }}
+                  sub={healed ? "Healthy again. Activate him to use him." : `${p.team} · out`}
+                  right={<button className={`chip ${healed ? "on" : ""}`} onClick={() => activate(id)}>Activate</button>} />
+              );
+            })}
+            {!stashed.length && (
+              <div style={{ padding: 14 }} className="mini">
+                Empty. Move an injured player here to free up a bench spot.
+              </div>
+            )}
+          </div>
+          {bench.some((id) => irEligible(season, id)) && stashed.length < irSlots(lg) && (
+            <div className="mini" style={{ marginTop: 7 }}>
+              You have an injured player on your bench and a free IR slot.
+            </div>
+          )}
+        </>
+      )}
 
       <RosterAudit lg={lg} values={values} ids={ids} />
 
@@ -2754,6 +2941,10 @@ function SeasonView({ lg, setLg, toast, setTab }) {
           const w = runWaivers(lgc, st, claims);
           if (w.length) st.log.push({ week: st.week, type: "waivers", items: w });
         }
+        // healed players come off IR before the next week begins
+        const returned = reconcileIR(lgc, st);
+        if (returned.length) st.log.push({ week: st.week, type: "ir", items: returned });
+
         if (st.week === st.shape.rsWeeks) st.playoffs = seedPlayoffs(lgc, st);
         else if (!rs && st.playoffs) {
           const next = advancePlayoffs(lgc, st, r.matchups);
@@ -2787,6 +2978,7 @@ function SeasonView({ lg, setLg, toast, setTab }) {
           st.record = r.record; st.actual = r.actual; st.injuries = r.injuries;
           st.weeks.push({ week: st.week, matchups: r.matchups, lineups: r.lineups, scores, injuries: r.newInjuries, playoff: !isRS });
           if (isRS) { const w = runWaivers(lgc, st, []); if (w.length) st.log.push({ week: st.week, type: "waivers", items: w }); }
+          reconcileIR(lgc, st);
           if (st.week === st.shape.rsWeeks) st.playoffs = seedPlayoffs(lgc, st);
           else if (!isRS && st.playoffs) { const n = advancePlayoffs(lgc, st, r.matchups); st.playoffs = n; if (n.done) st.champion = n.champion; }
           st.week += 1;
@@ -3420,7 +3612,16 @@ function StandingsView({ lg, s, table }) {
         <div className="card">
           <h2 style={{ fontSize: 23, marginBottom: 9 }}>Transactions</h2>
           {s.log.slice().reverse().slice(0, 12).map((entry, i) => (
-            entry.type === "trade" ? (
+            entry.type === "ir" ? (
+              <div key={i} style={{ marginBottom: 9 }}>
+                <div className="eyebrow" style={{ marginBottom: 3 }}>Week {entry.week} activations</div>
+                {entry.items.map((it, k) => (
+                  <div key={k} className="mini">
+                    {lg.gms[it.gm].name} activated {BY_ID[it.id].name} off injured reserve.
+                  </div>
+                ))}
+              </div>
+            ) : entry.type === "trade" ? (
               <div key={i} style={{ marginBottom: 9 }}>
                 <div className="eyebrow" style={{ marginBottom: 3, color: "var(--los)" }}>Week {entry.week} trade</div>
                 <div className="mini">
@@ -4199,7 +4400,7 @@ function GMChat({ lg }) {
    with no mock league required. Saved separately from any league.
    ============================================================ */
 
-export const VERSION = "1.14.0";
+export const VERSION = "1.15.0";
 const MY_KEY = "huddle:myteam";
 
 const DEFAULT_MY = { ids: [], teams: 12, ppr: 1, superflex: false, name: "My Team", topPad: 0, liveInjuries: true };
@@ -5314,6 +5515,7 @@ export default function App() {
         const savedLeague = await store.get(`huddle:lg:${active.leagueId}`);
         if (savedLeague && alive) {
           ensureSchedule(savedLeague);   // restored sessions too
+          ensureIR(savedLeague);
           setScreen("mock");
           setLg(savedLeague);
           setTab(safeTab(active.tab, savedLeague));
@@ -5366,6 +5568,7 @@ export default function App() {
 
   const openLeague = (l) => {
     ensureSchedule(l);   // older saves get a schedule written in on open
+    ensureIR(l);
     setLg(l);
     setTab(safeTab(null, l));
   };

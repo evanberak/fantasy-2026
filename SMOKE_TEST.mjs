@@ -392,6 +392,58 @@ check("the playoff bracket reflects what actually happened", () => {
   return html.length > 400 ? null : "bracket rendered almost nothing";
 });
 
+check("injured reserve obeys its own rules", () => {
+  for (const slots of [0, 1, 2, 3]) {
+    const table = M.makeLeague({ teams: 12, rounds: 15, superflex: false, userSlot: 5, ppr: 1, irSlots: slots });
+    while (!M.draftDone(table)) {
+      const onClock = M.onClock(table);
+      const taken = new Set(table.picks.map((p) => p.playerId));
+      M.makePick(table, M.aiPick(table, onClock, M.PLAYERS.filter((p) => !taken.has(p.id))).id);
+    }
+    table.season = M.startSeason(table, 4);
+    for (let i = 0; i < 10; i++) {
+      const st = table.season;
+      const r = M.simWeek(table, st, st.lineups[st.week]);
+      for (let t = 0; t < 12; t++) {
+        const stashed = new Set(M.irList(table, t));
+        for (const id of (r.lineups[t] || [])) {
+          if (id && stashed.has(id)) return `a player on IR started for team ${t}`;
+        }
+      }
+      st.record = r.record; st.actual = r.actual; st.injuries = r.injuries;
+      st.weeks.push({ week: st.week, matchups: r.matchups, lineups: r.lineups, scores: {}, injuries: r.newInjuries });
+      M.runWaivers(table, st, []);
+      M.reconcileIR(table, st);
+      for (let t = 0; t < 12; t++) {
+        if (M.irList(table, t).length > slots) return `team ${t} exceeded ${slots} IR slots`;
+        if (M.activeRoster(table, t).length > table.settings.rounds) return `team ${t} carried too many active players`;
+        for (const id of M.irList(table, t)) {
+          if (!M.irEligible(st, id) && M.openRosterSpots(table, t) > 0) {
+            return `a healthy player sat on IR with bench room on team ${t}`;
+          }
+        }
+      }
+      st.week += 1;
+    }
+  }
+  return null;
+});
+
+check("only injured players can be stashed", () => {
+  const table = M.makeLeague({ teams: 12, rounds: 15, superflex: false, userSlot: 5, ppr: 1, irSlots: 1 });
+  while (!M.draftDone(table)) {
+    const onClock = M.onClock(table);
+    const taken = new Set(table.picks.map((p) => p.playerId));
+    M.makePick(table, M.aiPick(table, onClock, M.PLAYERS.filter((p) => !taken.has(p.id))).id);
+  }
+  table.season = M.startSeason(table, 4);
+  const healthy = table.rosters[5].find((id) => !M.irEligible(table.season, id));
+  if (M.canStashIR(table, table.season, 5, healthy).ok) return "a healthy player was allowed on IR";
+  const none = M.makeLeague({ teams: 12, rounds: 15, superflex: false, userSlot: 5, ppr: 1, irSlots: 0 });
+  if (M.canStashIR(none, null, 5, 1).ok) return "IR allowed in a league with no slots";
+  return null;
+});
+
 console.log("\nScreens");
 
 const noop = () => {};

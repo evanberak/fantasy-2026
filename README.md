@@ -97,6 +97,10 @@ instead of being decoration.
 - 14-week regular season + 6-team playoff (10+ teams), or 15 + 4-team (8 teams)
 - Weekly injuries with real duration distributions, from one week to season-ending
 - Free agents are scored every week, so the wire is live and trending players surface
+- **Injured reserve**, 0 to 3 slots, set at league creation. Stashed players do
+  not use a bench spot and cannot be started, only genuinely injured players are
+  eligible, and healed players are activated automatically once there is room.
+  CPU teams use their slots too.
 - Waivers: **FAAB blind bidding** (budget $50/$100/$200/$1000) **or classic rolling
   priority**, your choice at league creation. CPU teams bid against you either way.
 - Mid-season trade offers from CPU teams, already priced
