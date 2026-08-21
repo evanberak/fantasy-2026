@@ -1562,8 +1562,8 @@ export function advancePlayoffs(lg, state, matchups) {
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;700&display=swap');
 .hd { --nudge:0px; --safe-top:env(safe-area-inset-top,0px); --safe-bot:env(safe-area-inset-bottom,0px); --ink:#0C1116; --panel:#141C24; --panel2:#1B252F; --line:#26323D;
-  --chalk:#E9EEF2; --mute:#8B9BA8; --first:#FFD400; --los:#3B7BFF;
-  --red:#E2483A; --green:#22C48A;
+  --chalk:#E9EEF2; --mute:#8B9BA8; --first:#B4CBA4; --los:#3B7BFF;
+  --red:#EF6153; --green:#4FB98D;
   background:var(--ink); color:var(--chalk); font-family:Inter,system-ui,sans-serif;
   min-height:100vh; -webkit-font-smoothing:antialiased; font-size:15.5px; }
 .hd *{box-sizing:border-box}
@@ -1589,12 +1589,6 @@ const CSS = `
 .subnav{position:sticky;top:0;z-index:25;display:grid;grid-template-columns:repeat(3,1fr);gap:3px;
   padding:8px 10px;background:rgba(12,17,22,.97);backdrop-filter:blur(8px);
   border-bottom:1px solid var(--line)}
-/* the band that says, unmistakably, that everything below is simulated */
-.mockband{position:sticky;top:0;z-index:26;display:flex;align-items:center;gap:9px;
-  padding:7px 14px;background:rgba(255,212,0,.10);border-bottom:1px solid rgba(255,212,0,.28)}
-.mockband .eyebrow{color:var(--first)}
-.mockband .exit{margin-left:auto;font-size:11.5px;font-weight:700;color:var(--first);
-  font-family:'Barlow Condensed',sans-serif;text-transform:uppercase;letter-spacing:.06em}
 .snb{padding:9px 2px;border-radius:8px;background:transparent;border:none;white-space:nowrap;
   font-size:13px;font-weight:700;color:var(--mute);font-family:'Barlow Condensed',sans-serif;
   text-transform:uppercase;letter-spacing:.06em;position:relative;text-align:center}
@@ -1660,7 +1654,7 @@ const CSS = `
 .act .arw{color:var(--mute);font-size:20px;flex:none}
 .wk{display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--line)}
 .wk:last-child{border-bottom:none}
-.wk.po{background:rgba(255,212,0,.05)}
+.wk.po{background:rgba(180,203,164,.05)}
 .wkn{width:26px;flex:none;font-family:'JetBrains Mono',monospace;font-size:11.5px;color:var(--mute);text-align:right}
 .rng{width:78px;flex:none;text-align:right}
 .rngbar{height:4px;background:var(--panel2);border-radius:99px;position:relative;margin:4px 0 3px;overflow:hidden}
@@ -2260,7 +2254,7 @@ function DraftRoom({ lg, setLg, toast }) {
   return (
     <div className="wrap">
       <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-        <div style={{ padding: "12px 13px", background: isUser ? "rgba(255,212,0,.10)" : "transparent" }}>
+        <div style={{ padding: "12px 13px", background: isUser ? "rgba(180,203,164,.10)" : "transparent" }}>
           <div className="row sp">
             <div>
               <div className="eyebrow">Round {roundOf(lg, lg.picks.length)} · Pick {slotOf(lg, lg.picks.length)} · #{lg.picks.length + 1} overall</div>
@@ -2287,7 +2281,7 @@ function DraftRoom({ lg, setLg, toast }) {
       {lg.picks.length > 0 && (
         <div className="scroll-x" style={{ marginBottom: 11 }}>
           {lg.picks.slice(-8).reverse().map((pk) => (
-            <div key={pk.overall} className="chip" style={{ background: lg.gms[pk.gmIdx].isUser ? "rgba(255,212,0,.14)" : undefined, color: lg.gms[pk.gmIdx].isUser ? "var(--first)" : undefined }}>
+            <div key={pk.overall} className="chip" style={{ background: lg.gms[pk.gmIdx].isUser ? "rgba(180,203,164,.14)" : undefined, color: lg.gms[pk.gmIdx].isUser ? "var(--first)" : undefined }}>
               {pk.overall}. {BY_ID[pk.playerId].name}
             </div>
           ))}
@@ -3061,7 +3055,7 @@ function TradeDesk({ lg, setLg, values, toast }) {
         const on = sel.includes(id);
         return (
           <div key={id} className="plr" onClick={() => { setSel(sel.includes(id) ? sel.filter((x) => x !== id) : [...sel, id]); setReply(null); }}
-            style={{ cursor: "pointer", background: on ? "rgba(255,212,0,.10)" : undefined }}>
+            style={{ cursor: "pointer", background: on ? "rgba(180,203,164,.10)" : undefined }}>
             <div className={POSC(BY_ID[id].pos)}>{BY_ID[id].pos === "DST" ? "DEF" : BY_ID[id].pos}</div>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div className="nm"><Tap id={id}>{BY_ID[id].name}</Tap></div>
@@ -3188,7 +3182,7 @@ function TradeDesk({ lg, setLg, values, toast }) {
 function ChampionCard({ lg, s }) {
   const g = lg.gms[s.champion];
   return (
-    <div className="card" style={{ borderColor: "var(--first)", background: "rgba(255,212,0,.07)" }}>
+    <div className="card" style={{ borderColor: "var(--first)", background: "rgba(180,203,164,.07)" }}>
       <div className="eyebrow">Champion</div>
       <h1 style={{ fontSize: 32, margin: "6px 0" }}>{g.name}</h1>
       <div className="mini">{g.isUser ? "You won it. The season broke your way. Check the wire log to see which pickup swung it." : "Better luck next mock. Run it back from the home screen with a different draft slot."}</div>
@@ -3286,7 +3280,7 @@ function StandingsView({ lg, s, table }) {
     <>
       <div className="card tight">
         {table.map((t, i) => (
-          <div key={t.idx} className="plr" style={{ background: t.isUser ? "rgba(255,212,0,.07)" : undefined }}>
+          <div key={t.idx} className="plr" style={{ background: t.isUser ? "rgba(180,203,164,.07)" : undefined }}>
             <div className="disp num" style={{ width: 22, color: i < s.shape.pT ? "var(--first)" : "var(--mute)", fontSize: 17 }}>{i + 1}</div>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div className="nm" style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t.name}</div>
@@ -4085,7 +4079,7 @@ function GMChat({ lg }) {
    with no mock league required. Saved separately from any league.
    ============================================================ */
 
-export const VERSION = "1.12.0";
+export const VERSION = "1.12.1";
 const MY_KEY = "huddle:myteam";
 
 const DEFAULT_MY = { ids: [], teams: 12, ppr: 1, superflex: false, name: "My Team", topPad: 0, liveInjuries: true };
@@ -4940,7 +4934,7 @@ function BoardArchive({ onBack }) {
                 const isUser = p.gmIdx === open.userSlot;
                 const edge = p.overall - p.adp;
                 return (
-                  <div key={p.overall} className="plr" style={{ background: isUser ? "rgba(255,212,0,.09)" : undefined }}>
+                  <div key={p.overall} className="plr" style={{ background: isUser ? "rgba(180,203,164,.09)" : undefined }}>
                     <div className="disp num" style={{ width: 34, fontSize: 12, color: "var(--mute)", flex: "none" }}>
                       {r}.{String(p.slot).padStart(2, "0")}
                     </div>
@@ -5317,13 +5311,6 @@ export default function App() {
               </div>
             </div>
           </div>
-
-          {screen === "mock" && (
-            <div className="mockband">
-              <div className="eyebrow">Mock season · simulated</div>
-              <button className="exit" onClick={home}>Exit to my league</button>
-            </div>
-          )}
 
           {screen === "mock" && lg && (
             <div className="subnav">
