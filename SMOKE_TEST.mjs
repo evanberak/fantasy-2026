@@ -18,8 +18,7 @@ import { readFileSync, writeFileSync, unlinkSync } from "fs";
 const src = readFileSync("./App.jsx", "utf8");
 const NAMES = [
   "Settings", "MockHome", "TradeHelp", "DraftHelp", "Hub", "BoardArchive",
-  "ScoringEditor", "TeamView", "SeasonView", "TradesView", "ToolsView",
-  "DraftRoom", "TradeCalc", "TradeFinder", "ShotFinder", "Versus", "Radar",
+  "ScoringEditor", "TeamView", "SeasonView",   "DraftRoom", "TradeCalc", "TradeFinder", "ShotFinder", "Versus", "Radar",
   "GMChat", "MyRoster", "TradeDesk", "PlayerCardSheet", "StandingsView",
   "WeekRecap", "DraftRecap", "findTrades", "snapshotBoard",
 ];
@@ -312,6 +311,41 @@ check("no component calls a hook after an early return", () => {
   return null;
 });
 
+check("the draft avoids players flagged as out", () => {
+  const star = M.PLAYERS[3];   // a top-five pick by cost
+  M.setLiveInjuries({ [star.id]: { status: "ir", code: "IR", label: "Injured reserve", factor: 0, startable: false } }, { matched: 1 });
+  const table = M.makeLeague({ teams: 12, rounds: 15, superflex: false, userSlot: 5, ppr: 1 });
+  while (!M.draftDone(table)) {
+    const onClock = M.onClock(table);
+    const taken = new Set(table.picks.map((p) => p.playerId));
+    M.makePick(table, M.aiPick(table, onClock, M.PLAYERS.filter((p) => !taken.has(p.id))).id);
+  }
+  const pick = table.picks.find((p) => p.playerId === star.id);
+  M.setLiveInjuries(null, null);
+  if (pick && pick.overall < 40) return `${star.name} was on IR and still went at pick ${pick.overall}`;
+  return null;
+});
+
+check("drafting maximizes the starting lineup, not raw points", () => {
+  /* A roster that fills its starting slots should beat one that hoards a
+     position. Verified by checking nobody ends up with dead weight: more
+     bodies at a spot than the lineup can ever start, twice over. */
+  const table = M.makeLeague({ teams: 12, rounds: 15, superflex: false, userSlot: 5, ppr: 1 });
+  while (!M.draftDone(table)) {
+    const onClock = M.onClock(table);
+    const taken = new Set(table.picks.map((p) => p.playerId));
+    M.makePick(table, M.aiPick(table, onClock, M.PLAYERS.filter((p) => !taken.has(p.id))).id);
+  }
+  for (let t = 0; t < 12; t++) {
+    const counts = {};
+    table.rosters[t].forEach((id) => { counts[M.BY_ID[id].pos] = (counts[M.BY_ID[id].pos] || 0) + 1; });
+    if ((counts.QB || 0) > 2) return `team ${t} hoarded ${counts.QB} quarterbacks`;
+    if ((counts.TE || 0) > 2) return `team ${t} hoarded ${counts.TE} tight ends`;
+    if ((counts.K || 0) > 1 || (counts.DST || 0) > 1) return `team ${t} carried a spare kicker or defense`;
+  }
+  return null;
+});
+
 console.log("\nScreens");
 
 const noop = () => {};
@@ -322,8 +356,6 @@ const screens = [
   ["DraftRoom", M.DraftRoom, { lg: league, setLg: noop, toast: noop }],
   ["TeamView", M.TeamView, { lg: league, setLg: noop, toast: noop }],
   ["SeasonView", M.SeasonView, { lg: league, setLg: noop, toast: noop, setTab: noop }],
-  ["TradesView", M.TradesView, { lg: league, toast: noop }],
-  ["ToolsView", M.ToolsView, { lg: league, toast: noop }],
   ["TradeCalc", M.TradeCalc, { lg: league }],
   ["TradeFinder", M.TradeFinder, { lg: league, toast: noop }],
   ["TradeDesk", M.TradeDesk, { lg: league, setLg: noop, values, toast: noop }],

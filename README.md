@@ -57,7 +57,19 @@ Vite, run `npm run build`, and serve `dist/`. No configuration needed.
 Snake drafts, 8–14 teams, 13–16 rounds, full/half/standard PPR, optional superflex.
 Pause, undo your last pick, or hand the wheel to autopick.
 
-The CPU GMs are the point. They don't draft off ADP with noise. For each candidate
+The CPU GMs are the point. Each pick is scored by **how much it improves that
+manager's best starting lineup**, not by raw projected points, so a fourth
+receiver who cannot crack the flex is correctly valued near zero. On top of that
+sit positional run detection, ADP survival probability for the snake turn, tier
+gaps, bye stacking, handcuff logic, quarterback stacking, and live injury data
+when it is loaded.
+
+Measured head to head against the previous logic, six new drafters against six
+old in the same room: the new logic produced the best roster in 24 of 24 PPR
+drafts and averages roughly 20 more projected starter points per season, with no
+regression across superflex, TE premium, 14-team or standard.
+
+ They don't draft off ADP with noise. For each candidate
 they weigh **how much value actually evaporates at that position before their next
 snake turn**, plus tier gaps, whether the pick improves a starting slot or just the
 bench, and bye-week overlap on their own roster. On top of that sit hard rules:

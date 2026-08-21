@@ -19,8 +19,7 @@ import { readFileSync, writeFileSync, unlinkSync } from "fs";
 const src = readFileSync("./App.jsx", "utf8");
 const NAMES = [
   "PlayerCardSheet", "DraftRecap", "TeamView", "SeasonView", "TradeDesk",
-  "StandingsView", "WeekRecap", "WireView", "TradesView", "ToolsView",
-  "DraftRoom", "Versus", "MyRoster", "TradeCalc", "shellLeague",
+  "StandingsView", "WeekRecap", "WireView",   "DraftRoom", "Versus", "MyRoster", "TradeCalc", "shellLeague",
   "PersonaPicker", "BoardArchive", "Settings", "MockHome", "Hub",
   "TradeHelp", "DraftHelp", "ScoringEditor", "TradeFinder", "Radar", "GMChat",
 ];
@@ -120,10 +119,9 @@ await clickThrough("Week recap rows", React.createElement(M.WeekRecap, { lg: lea
 await clickThrough("Trade desk partners", React.createElement(M.TradeDesk, { lg: league, setLg: noop, values, toast: noop }), ".act");
 await clickThrough("Draft room rows", React.createElement(M.DraftRoom, { lg: league, setLg: noop, toast: noop }), ".plr");
 await clickThrough("Waiver wire rows", React.createElement(M.WireView, { lg: league, s: league.season, values, claims: [], setClaims: noop, claimFor: null, setClaimFor: noop, toast: noop }), ".plr");
+await clickThrough("Season trade modes", React.createElement(M.SeasonView, { lg: league, setLg: noop, toast: noop, setTab: noop }), ".segs .seg");
 await clickThrough("Season nav", React.createElement(M.SeasonView, { lg: league, setLg: noop, toast: noop, setTab: noop }), ".seg");
 await clickThrough("Season actions", React.createElement(M.SeasonView, { lg: league, setLg: noop, toast: noop, setTab: noop }), ".act");
-await clickThrough("Trades tabs", React.createElement(M.TradesView, { lg: league, toast: noop }), ".chip");
-await clickThrough("Tools tabs", React.createElement(M.ToolsView, { lg: league, toast: noop }), ".chip");
 await clickThrough("Trade help tabs", React.createElement(M.TradeHelp, { my, save: noop, toast: noop }), ".chip");
 await clickThrough("Draft help tabs", React.createElement(M.DraftHelp, { my, save: noop, toast: noop }), ".chip");
 await clickThrough("Settings rows", React.createElement(M.Settings, { my, save: noop, toast: noop, onWipe: noop }), ".act");

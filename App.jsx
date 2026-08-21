@@ -650,6 +650,26 @@ function picksUntilNext(lg, gmIdx) {
   return 999;
 }
 
+/* Best starting lineup a set of players can field, scored by any ppg function.
+   The draft uses this to ask the only question that matters: how much does this
+   pick improve the eleven I actually start? A fourth receiver adds nothing, a
+   third quarterback adds nothing, and the model now knows that without needing
+   a hand-tuned table of roster needs. */
+export function bestStarterPoints(lg, entries) {
+  const slots = lineupFor(lg.settings);
+  const sorted = entries.slice().sort((a, b) => b.ppg - a.ppg);
+  const used = new Set();
+  let total = 0;
+  for (const slot of slots) {
+    for (let i = 0; i < sorted.length; i++) {
+      if (used.has(i)) continue;
+      if (!slot.accepts.includes(sorted[i].pos)) continue;
+      used.add(i); total += sorted[i].ppg; break;
+    }
+  }
+  return total;
+}
+
 export function aiPick(lg, gmIdx, available) {
   const g = lg.gms[gmIdx];
   const P = PERSONAS.find((p) => p.key === g.persona) || PERSONAS[0];
@@ -663,6 +683,15 @@ export function aiPick(lg, gmIdx, available) {
   const left = rounds - ids.length;             // picks this GM has remaining
   const gap = picksUntilNext(lg, gmIdx);
   const overall = lg.picks.length + 1;
+
+  /* An elite drafter does not spend an eighth round pick on someone who is on
+     injured reserve. Live injury data, when loaded, discounts the projection
+     the CPU is drafting against. */
+  const projOf = (p) => {
+    const live = injuryFor(p.id);
+    return proj(p, ppr) * (live ? live.factor : 1);
+  };
+  const ppgOf = (p) => projOf(p) / 17;
 
   const needK = counts.K < 1, needDST = counts.DST < 1;
   const mustFill = (needK ? 1 : 0) + (needDST ? 1 : 0);
@@ -738,12 +767,12 @@ export function aiPick(lg, gmIdx, available) {
     let acc = 0, goneProb = 1;
     for (const cand of at.slice(0, 14)) {
       const ps = survive(cand);
-      acc += proj(cand, ppr) * ps * goneProb;   // he is there AND everyone better is gone
+      acc += projOf(cand) * ps * goneProb;   // he is there AND everyone better is gone
       goneProb *= (1 - ps);
       if (goneProb < 0.02) break;
     }
     const tail = at[Math.min(at.length - 1, 14)];
-    expectedNext[pos] = acc + (tail ? proj(tail, ppr) * goneProb : 0);
+    expectedNext[pos] = acc + (tail ? projOf(tail) * goneProb : 0);
   }
 
   /* Positional runs. When four of the last eight picks were backs, the board
@@ -756,21 +785,59 @@ export function aiPick(lg, gmIdx, available) {
     runHeat[posName] = n >= 4 ? 1.35 : n === 3 ? 1.18 : 1;
   }
 
+  /* Marginal starting-lineup value. The only question that matters for a pick
+     is how much better my starting eleven gets, which handles roster need,
+     flex eligibility and diminishing returns without a hand-tuned table.
+     Measured against the roster as it actually stands: judging against a
+     hypothetical finished roster was tried and drafted far worse, because it
+     let the model talk itself out of positions it genuinely needed. */
+  const mine = ids.map((id) => ({ pos: BY_ID[id].pos, ppg: ppgOf(BY_ID[id]) }));
+  const baseStarters = bestStarterPoints(lg, mine);
+
+  /* Supply and demand across the whole room. A sharp drafter is not just asking
+     "is this player good", he is asking "how many startable ones are left and
+     how many managers still need one". When six usable tight ends remain and
+     nine teams have none, the position is about to get expensive. */
+  const demand = {}, supply = {};
+  for (const pos of POS_ORDER) {
+    let need = 0;
+    for (const other of lg.gms) {
+      const theirs = rosterCounts(lg.rosters[other.idx]);
+      need += Math.max(0, want[pos] - theirs[pos]);
+    }
+    demand[pos] = need;
+    const top = bestNow[pos] ? projOf(bestNow[pos]) : 0;
+    // players still close enough to the top of the position to start
+    supply[pos] = available.filter((x) => x.pos === pos && projOf(x) >= top * 0.78).length;
+  }
+  const urgency = {};
+  for (const pos of POS_ORDER) {
+    const d = demand[pos], sup = supply[pos];
+    urgency[pos] = d <= 0 ? 0.9
+      : Math.max(0.85, Math.min(1.55, 1 + 0.4 * ((d - sup) / Math.max(2, d))));
+  }
+
   let best = null, bestScore = -Infinity;
   for (const p of pool.slice(0, 45)) {
-    const pts = proj(p, ppr);
+    const pts = projOf(p);
     // 1. how much value evaporates at this position if we wait one turn
     const fallback = expectedNext[p.pos] || pts * 0.75;
     const dropoff = Math.max(0, pts - fallback);
     // 2. tier break: real gap to the next man at the position
     const same = available.filter((x) => x.pos === p.pos);
     const idx = same.findIndex((x) => x.id === p.id);
-    const tier = same[idx + 1] ? Math.max(0, pts - proj(same[idx + 1], ppr)) : 0;
-    // 3. does this pick actually improve the starting lineup?
-    const have = counts[p.pos];
-    const roleWeight = have < want[p.pos] ? 1.0
-      : have === want[p.pos] ? 0.78                 // flex / handcuff value
-        : Math.max(0.32, 0.62 - (have - want[p.pos]) * 0.12);
+    const tier = same[idx + 1] ? Math.max(0, pts - projOf(same[idx + 1])) : 0;
+
+    /* 3. The real question: how much better is my starting lineup with him in
+       it? This replaces a hand-tuned roster-need table. A fourth receiver who
+       cannot crack the flex scores near zero here no matter how good he is,
+       which is exactly how a sharp drafter sees him. Bench players still carry
+       insurance value, just heavily discounted. */
+    const starterGain = Math.max(0,
+      bestStarterPoints(lg, [...mine, { pos: p.pos, ppg: ppgOf(p) }]) - baseStarters) * 17;
+    const benchValue = Math.max(0, pts - starterGain) * 0.22;
+    const effective = starterGain + benchValue;
+
     // 4. don't reach into next week. ADP discipline, loosened late
     const reachPenalty = Math.max(0, p.adp - overall - 6 - round * 1.5) * (1.6 / (1 + round * 0.12));
     // 5. bye-week hygiene
@@ -790,8 +857,20 @@ export function aiPick(lg, gmIdx, available) {
       && ids.some((id) => BY_ID[id].pos === "RB" && BY_ID[id].team === p.team);
     const handcuff = stacksMyBack ? (round > rounds * 0.7 ? 4 : -9) : 0;
 
-    const score = (pts * 0.42 + dropoff * 1.5 * runHeat[p.pos] + tier * 0.9) * roleWeight
-      - reachPenalty - byePenalty + upside + persona + handcuff + noise;
+    /* Correlation: pairing a quarterback with his own receiver means their big
+       weeks land together. Worth a nudge late, never worth a reach. */
+    const myQBTeams = ids.filter((id) => BY_ID[id].pos === "QB").map((id) => BY_ID[id].team);
+    const stack = (["WR", "TE"].includes(p.pos) && myQBTeams.includes(p.team) && round > 4) ? 5 : 0;
+
+    /* Scarcity only matters for players who would actually start for me. A third
+       quarterback in superflex can be the last of a vanishing tier and still be
+       worth nothing, because he sits on my bench either way. */
+    const relevance = starterGain > 0.5 ? 1 : 0.15;
+
+    const score = effective * 0.42
+      + dropoff * 1.5 * runHeat[p.pos] * urgency[p.pos] * relevance
+      + tier * 0.9 * relevance
+      - reachPenalty - byePenalty + upside + persona + handcuff + stack + noise;
 
     if (score > bestScore) { bestScore = score; best = p; }
   }
@@ -1501,15 +1580,21 @@ const CSS = `
 .fdl::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--first)}
 .hdr{position:sticky;top:0;padding-top:calc(11px + var(--safe-top) + var(--nudge));z-index:30;background:rgba(12,17,22,.94);backdrop-filter:blur(8px);
   border-bottom:1px solid var(--line);padding:10px 14px 11px;display:flex;align-items:center;gap:10px;min-height:56px}
-.tabs{position:fixed;left:0;right:0;bottom:0;z-index:40;display:grid;grid-template-columns:repeat(5,1fr);gap:4px;
+.tabs{position:fixed;left:0;right:0;bottom:0;z-index:40;display:grid;grid-template-columns:repeat(4,1fr);gap:4px;
   background:rgba(10,14,19,.98);backdrop-filter:blur(14px);border-top:1px solid var(--line);
   padding:8px 8px calc(8px + var(--safe-bot))}
 .navpad{height:calc(78px + var(--safe-bot))}
 /* primary nav inside a mock league: one evenly spaced segmented control,
    no horizontal scrolling, so the five sections never shift position */
-.subnav{position:sticky;top:0;z-index:25;display:grid;grid-template-columns:repeat(5,1fr);gap:3px;
+.subnav{position:sticky;top:0;z-index:25;display:grid;grid-template-columns:repeat(3,1fr);gap:3px;
   padding:8px 10px;background:rgba(12,17,22,.97);backdrop-filter:blur(8px);
   border-bottom:1px solid var(--line)}
+/* the band that says, unmistakably, that everything below is simulated */
+.mockband{position:sticky;top:0;z-index:26;display:flex;align-items:center;gap:9px;
+  padding:7px 14px;background:rgba(255,212,0,.10);border-bottom:1px solid rgba(255,212,0,.28)}
+.mockband .eyebrow{color:var(--first)}
+.mockband .exit{margin-left:auto;font-size:11.5px;font-weight:700;color:var(--first);
+  font-family:'Barlow Condensed',sans-serif;text-transform:uppercase;letter-spacing:.06em}
 .snb{padding:9px 2px;border-radius:8px;background:transparent;border:none;white-space:nowrap;
   font-size:13px;font-weight:700;color:var(--mute);font-family:'Barlow Condensed',sans-serif;
   text-transform:uppercase;letter-spacing:.06em;position:relative;text-align:center}
@@ -2613,6 +2698,7 @@ function SeasonView({ lg, setLg, toast, setTab }) {
   const [claims, setClaims] = useState([]);
   const [odds, setOdds] = useState(null);
   const [claimFor, setClaimFor] = useState(null);
+  const [tradeMode, setTradeMode] = useState("desk");
 
   if (!draftDone(lg)) return <Empty text="Finish your draft first. The season needs a full roster." />;
 
@@ -2851,7 +2937,18 @@ function SeasonView({ lg, setLg, toast, setTab }) {
           claimFor={claimFor} setClaimFor={setClaimFor} toast={toast} />
       )}
 
-      {view === "trade" && <TradeDesk lg={lg} setLg={setLg} values={values} toast={toast} />}
+      {view === "trade" && (
+        <>
+          <div className="segs" style={{ marginBottom: 12 }}>
+            {[["desk", "Propose"], ["scan", "Scan league"]].map(([k, l]) => (
+              <button key={k} className={`seg ${tradeMode === k ? "on" : ""}`} onClick={() => setTradeMode(k)}>{l}</button>
+            ))}
+          </div>
+          {tradeMode === "desk"
+            ? <TradeDesk lg={lg} setLg={setLg} values={values} toast={toast} />
+            : <TradeFinder lg={lg} toast={toast} />}
+        </>
+      )}
     </div>
   );
 }
@@ -3392,21 +3489,6 @@ function PlayerPicker({ open, onClose, onPick, pool, title }) {
   );
 }
 
-function TradesView({ lg, toast }) {
-  const [mode, setMode] = useState("calc");
-  return (
-    <div className="wrap">
-      <div className="scroll-x" style={{ marginBottom: 12 }}>
-        {[["calc", "Mock calculator"], ["finder", "Mock trade finder"], ["shot", "From screenshot"]].map(([k, l]) => (
-          <button key={k} className={`chip ${mode === k ? "on" : ""}`} onClick={() => setMode(k)}>{l}</button>
-        ))}
-      </div>
-      {mode === "calc" && <TradeCalc lg={lg} />}
-      {mode === "finder" && <TradeFinder lg={lg} toast={toast} />}
-      {mode === "shot" && <ShotFinder lg={lg} toast={toast} />}
-    </div>
-  );
-}
 
 function TradeCalc({ lg }) {
   const values = useMemo(() => buildValues(lg, lg.season), [lg]);
@@ -3829,21 +3911,6 @@ function ShotFinder({ lg, toast, my, save }) {
    TOOLS: compare, value radar, questions
    ============================================================ */
 
-function ToolsView({ lg, toast }) {
-  const [mode, setMode] = useState("vs");
-  return (
-    <div className="wrap">
-      <div className="scroll-x" style={{ marginBottom: 12 }}>
-        {[["vs", "A over B"], ["sleep", "Value radar"], ["gm", "Second opinion"]].map(([k, l]) => (
-          <button key={k} className={`chip ${mode === k ? "on" : ""}`} onClick={() => setMode(k)}>{l}</button>
-        ))}
-      </div>
-      {mode === "vs" && <Versus lg={lg} />}
-      {mode === "sleep" && <Radar lg={lg} />}
-      {mode === "gm" && <GMChat lg={lg} />}
-    </div>
-  );
-}
 
 function Versus({ lg }) {
   const values = useMemo(() => buildValues(lg, lg.season), [lg]);
@@ -4018,7 +4085,7 @@ function GMChat({ lg }) {
    with no mock league required. Saved separately from any league.
    ============================================================ */
 
-export const VERSION = "1.10.0";
+export const VERSION = "1.12.0";
 const MY_KEY = "huddle:myteam";
 
 const DEFAULT_MY = { ids: [], teams: 12, ppr: 1, superflex: false, name: "My Team", topPad: 0, liveInjuries: true };
@@ -5044,7 +5111,7 @@ function Hub({ go, my }) {
   const tiles = [
     { k: "trade", cls: "b", h: "Real Trades", d: "Your actual league. Screenshot your roster, analyze any offer, find deals both sides would take.", go: "Open" },
     { k: "draft", cls: "g", h: "Real Draft", d: "Your actual draft. Player A over player B with the reasoning, plus a value radar.", go: "Open" },
-    { k: "mock", cls: "", h: "Mock Season", d: "Simulated. Snake draft against seven personalities, then play all 17 weeks.", go: "Draft now" },
+    { k: "mock", cls: "", h: "Mock Season", d: "Simulated practice league. Draft, set lineups, play the season. Opens its own screen.", go: "Draft now" },
     { k: "settings", cls: "m", h: "Settings", d: `Version ${VERSION} · save and restore your data.`, go: "Open" },
   ];
   return (
@@ -5135,7 +5202,7 @@ export default function App() {
           ensureSchedule(savedLeague);   // restored sessions too
           setScreen("mock");
           setLg(savedLeague);
-          setTab(active.tab || (draftDone(savedLeague) ? (savedLeague.season ? "season" : "team") : "draft"));
+          setTab(safeTab(active.tab, savedLeague));
         }
       }
       if (alive) setRecoveryReady(true);
@@ -5180,10 +5247,13 @@ export default function App() {
     archiveBoard(lg).then((saved) => { if (saved) toast("Draft board saved"); });
   }, [lg && lg.id, lg && lg.picks.length, toast]);
 
+  const MOCK_TAB_KEYS = ["draft", "team", "season"];
+  const safeTab = (t, l) => (MOCK_TAB_KEYS.includes(t) ? t : (draftDone(l) ? (l.season ? "season" : "team") : "draft"));
+
   const openLeague = (l) => {
     ensureSchedule(l);   // older saves get a schedule written in on open
     setLg(l);
-    setTab(draftDone(l) ? (l.season ? "season" : "team") : "draft");
+    setTab(safeTab(null, l));
   };
   const closeLeague = async () => {
     if (lg) await saveLeague(lg);
@@ -5197,20 +5267,24 @@ export default function App() {
     setScreen("hub");
   };
 
-  const TITLES = { mock: "Mock Season", trade: "Real Trades", draft: "Real Draft", settings: "Settings" };
+  const TITLES = { mock: "Mock Season", trade: "Trades", draft: "Draft", settings: "Settings" };
 
   if (!recoveryReady || !myReady) {
     return <div className="hd"><style>{CSS}</style><div className="wrap"><div className="card"><div className="eyebrow">Huddle</div><h2 style={{ marginTop: 5 }}>Restoring your leagues…</h2><div className="mini">Checking the on-device recovery copy before the app opens.</div></div></div></div>;
   }
 
+  /* The bottom bar is real football only: your own league, all the time.
+     The mock season is a place you go into from Home, with its own labelled
+     navigation, so two similar looking bars never sit on screen meaning
+     different things. */
   const TABS = [
     ["hub", "Home"],
     ["trade", "Trades"],
     ["draft", "Draft"],
-    ["mock", "Mock"],
     ["settings", "Settings"],
   ];
-  const MOCK_TABS = [["draft", "Draft"], ["team", "Team"], ["season", "Season"], ["trades", "Trades"], ["tools", "Tools"]];
+  // inside a mock league there are only three places to be
+  const MOCK_TABS = [["draft", "Draft"], ["team", "Team"], ["season", "Season"]];
 
   const goTab = (k) => {
     if (k === "mock") { setScreen("mock"); return; }
@@ -5244,6 +5318,13 @@ export default function App() {
             </div>
           </div>
 
+          {screen === "mock" && (
+            <div className="mockband">
+              <div className="eyebrow">Mock season · simulated</div>
+              <button className="exit" onClick={home}>Exit to my league</button>
+            </div>
+          )}
+
           {screen === "mock" && lg && (
             <div className="subnav">
               {MOCK_TABS.map(([k, l]) => {
@@ -5266,8 +5347,6 @@ export default function App() {
                 {tab === "draft" && <DraftRoom lg={lg} setLg={setLg} toast={toast} />}
                 {tab === "team" && <TeamView lg={lg} setLg={setLg} toast={toast} />}
                 {tab === "season" && <SeasonView lg={lg} setLg={setLg} toast={toast} setTab={setTab} />}
-                {tab === "trades" && <TradesView lg={lg} toast={toast} />}
-                {tab === "tools" && <ToolsView lg={lg} toast={toast} />}
               </>
             )}
             {screen === "trade" && <TradeHelp my={my} save={saveMy} toast={toast} />}
