@@ -1294,6 +1294,34 @@ export function autoStashIR(lg, state) {
   }
 }
 
+/* Roster moves, in one place. The Team tab and the tap-anywhere player card
+   both call these, so a move behaves identically wherever it is made. */
+export function applyStash(lg, gmIdx, playerId, week) {
+  const next = JSON.parse(JSON.stringify(lg));
+  next.ir = next.ir || {};
+  next.ir[gmIdx] = [...(next.ir[gmIdx] || []), playerId];
+  // a stashed player cannot stay in a saved lineup
+  const clear = (lu) => (lu ? lu.map((x) => (x === playerId ? null : x)) : lu);
+  if (next.season?.lineups?.[week]) next.season.lineups[week] = clear(next.season.lineups[week]);
+  if (next.preseasonLineup) next.preseasonLineup = clear(next.preseasonLineup);
+  return next;
+}
+
+export function applyActivate(lg, gmIdx, playerId) {
+  const next = JSON.parse(JSON.stringify(lg));
+  next.ir[gmIdx] = (next.ir[gmIdx] || []).filter((x) => x !== playerId);
+  return next;
+}
+
+// where this player currently sits, for the card to describe
+export function rosterStatus(lg, gmIdx, playerId, week) {
+  if (!lg?.rosters?.[gmIdx]?.includes(playerId)) return null;
+  if (irList(lg, gmIdx).includes(playerId)) return "ir";
+  const lu = lg.season ? lg.season.lineups?.[week] : lg.preseasonLineup;
+  if (lu && lu.includes(playerId)) return "starting";
+  return "bench";
+}
+
 export function optimalLineup(lg, state, ids, week, values) {
   const slots = lineupFor(lg.settings);
   const avail = ids
@@ -2634,28 +2662,13 @@ function TeamView({ lg, setLg, toast }) {
   const moveToIR = (id) => {
     const check = canStashIR(lg, season, u, id);
     if (!check.ok) { toast(check.why); return; }
-    setLg((prev) => {
-      const next = JSON.parse(JSON.stringify(prev));
-      next.ir = next.ir || {};
-      next.ir[u] = [...(next.ir[u] || []), id];
-      // drop him from the lineup if he was in it
-      if (next.season?.lineups?.[week]) {
-        next.season.lineups[week] = next.season.lineups[week].map((x) => (x === id ? null : x));
-      } else if (next.preseasonLineup) {
-        next.preseasonLineup = next.preseasonLineup.map((x) => (x === id ? null : x));
-      }
-      return next;
-    });
+    setLg((prev) => applyStash(prev, u, id, week));
     toast(`${BY_ID[id].name} moved to IR`);
   };
 
   const activate = (id) => {
     if (openRosterSpots(lg, u) <= 0) { toast("No bench room. Drop someone first."); return; }
-    setLg((prev) => {
-      const next = JSON.parse(JSON.stringify(prev));
-      next.ir[u] = (next.ir[u] || []).filter((x) => x !== id);
-      return next;
-    });
+    setLg((prev) => applyActivate(prev, u, id));
     toast(`${BY_ID[id].name} activated`);
   };
   const projTotal = lineup.reduce((s, id) => s + (id ? values[id].ppg : 0), 0);
@@ -4400,7 +4413,7 @@ function GMChat({ lg }) {
    with no mock league required. Saved separately from any league.
    ============================================================ */
 
-export const VERSION = "1.15.0";
+export const VERSION = "1.15.1";
 const MY_KEY = "huddle:myteam";
 
 const DEFAULT_MY = { ids: [], teams: 12, ppr: 1, superflex: false, name: "My Team", topPad: 0, liveInjuries: true };
@@ -5035,7 +5048,7 @@ function GameLog({ p, season, values }) {
   );
 }
 
-function PlayerCardSheet({ id, lg, onClose }) {
+function PlayerCardSheet({ id, lg, onClose, onMove }) {
   const p = BY_ID[id] || null;
   const season = lg?.season || null;
   // hooks run every render, never behind a conditional return
@@ -5068,6 +5081,59 @@ function PlayerCardSheet({ id, lg, onClose }) {
           </div>
         </div>
       </div>
+
+      {(() => {
+        /* Tap a player anywhere in the app and you can move him from here:
+           the waiver wire, a trade screen, the scoreboard, the draft recap. */
+        if (!onMove || !lg?.season && !lg?.picks?.length) return null;
+        const u = lg.settings.userSlot;
+        const status = rosterStatus(lg, u, p.id, week || 1);
+        if (!status) return null;
+        const slots = irSlots(lg);
+        const eligible = irEligible(season, p.id);
+        const full = irList(lg, u).length >= slots;
+
+        const label = status === "ir" ? "On your injured reserve"
+          : status === "starting" ? "In your starting lineup"
+            : "On your bench";
+
+        return (
+          <div className="card" style={{ marginBottom: 11 }}>
+            <div className="row sp" style={{ marginBottom: status === "ir" || eligible ? 9 : 0 }}>
+              <div className="eyebrow">Your roster</div>
+              <div className="mini" style={{ color: "var(--chalk)" }}>{label}</div>
+            </div>
+            {status === "ir" ? (
+              <>
+                <button className="btn" onClick={() => { onMove("activate", p.id); onClose(); }}>
+                  Activate off IR
+                </button>
+                {!eligible && (
+                  <div className="mini" style={{ marginTop: 7 }}>
+                    He is healthy again, so he is only taking up an IR slot now.
+                  </div>
+                )}
+              </>
+            ) : slots <= 0 ? null : eligible ? (
+              <>
+                <button className="btn" disabled={full}
+                  onClick={() => { onMove("stash", p.id); onClose(); }}>
+                  {full ? "IR slots full" : "Move to IR"}
+                </button>
+                <div className="mini" style={{ marginTop: 7 }}>
+                  {full
+                    ? `All ${slots} IR slot${slots > 1 ? "s are" : " is"} taken. Activate someone first.`
+                    : status === "starting"
+                      ? "This frees a bench spot and clears him out of your lineup."
+                      : "This frees a bench spot. He cannot be started while stashed."}
+                </div>
+              </>
+            ) : (
+              <div className="mini">Healthy players cannot be stashed on IR.</div>
+            )}
+          </div>
+        );
+      })()}
 
       {inj > 0 && (
         <div className="card" style={{ borderColor: "var(--red)", marginBottom: 11 }}>
@@ -5684,7 +5750,29 @@ export default function App() {
         })}
       </div>
 
-      {cardId != null && <Boundary key={`card:${cardId}`}><PlayerCardSheet id={cardId} lg={cardLg} onClose={() => setCardId(null)} /></Boundary>}
+      {cardId != null && (
+        <Boundary key={`card:${cardId}`}>
+          <PlayerCardSheet
+            id={cardId}
+            lg={cardLg}
+            onClose={() => setCardId(null)}
+            onMove={lg ? (action, playerId) => {
+              const u = lg.settings.userSlot;
+              const week = lg.season ? lg.season.week : 1;
+              if (action === "stash") {
+                const check = canStashIR(lg, lg.season, u, playerId);
+                if (!check.ok) { toast(check.why); return; }
+                setLg((prev) => applyStash(prev, u, playerId, week));
+                toast(`${BY_ID[playerId].name} moved to IR`);
+              } else {
+                if (openRosterSpots(lg, u) <= 0) { toast("No bench room. Drop someone first."); return; }
+                setLg((prev) => applyActivate(prev, u, playerId));
+                toast(`${BY_ID[playerId].name} activated`);
+              }
+            } : null}
+          />
+        </Boundary>
+      )}
       <Toast msg={toastMsg} />
     </div>
     </PlayerCtx.Provider>

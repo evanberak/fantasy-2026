@@ -444,6 +444,45 @@ check("only injured players can be stashed", () => {
   return null;
 });
 
+check("a player can be moved to IR from anywhere", () => {
+  const table = M.makeLeague({ teams: 12, rounds: 15, superflex: false, userSlot: 5, ppr: 1, irSlots: 2 });
+  while (!M.draftDone(table)) {
+    const onClock = M.onClock(table);
+    const taken = new Set(table.picks.map((p) => p.playerId));
+    M.makePick(table, M.aiPick(table, onClock, M.PLAYERS.filter((p) => !taken.has(p.id))).id);
+  }
+  table.season = M.startSeason(table, 4);
+  let hurt = null;
+  for (let i = 0; i < 10 && !hurt; i++) {
+    const st = table.season;
+    const r = M.simWeek(table, st, null);
+    st.record = r.record; st.actual = r.actual; st.injuries = r.injuries; st.week += 1;
+    hurt = table.rosters[5].find((id) => M.irEligible(st, id));
+  }
+  if (!hurt) return "no injury turned up to test with";
+
+  const week = table.season.week;
+  const values = M.buildValues(table, table.season);
+  table.season.lineups[week] = M.optimalLineup(table, table.season, table.rosters[5], week, values);
+  table.season.lineups[week][0] = hurt;   // put him in the lineup first
+
+  const before = M.openRosterSpots(table, 5);
+  const stashed = M.applyStash(table, 5, hurt, week);
+  if (!M.irList(stashed, 5).includes(hurt)) return "stash did not put him on IR";
+  if (stashed.season.lineups[week].includes(hurt)) return "stash left him in the lineup";
+  if (!stashed.rosters[5].includes(hurt)) return "stash dropped him from the roster";
+  if (M.openRosterSpots(stashed, 5) <= before) return "stash did not free a bench spot";
+  if (M.rosterStatus(stashed, 5, hurt, week) !== "ir") return "status did not update";
+
+  const played = M.simWeek(stashed, stashed.season, stashed.season.lineups[week]);
+  if ((played.lineups[5] || []).includes(hurt)) return "a stashed player still started";
+
+  const active = M.applyActivate(stashed, 5, hurt);
+  if (M.irList(active, 5).includes(hurt)) return "activate did not clear the IR slot";
+  if (M.rosterStatus(active, 5, hurt, week) !== "bench") return "activated player did not return to the bench";
+  return null;
+});
+
 console.log("\nScreens");
 
 const noop = () => {};
