@@ -3275,6 +3275,131 @@ function WeekRecap({ lg, wk }) {
   );
 }
 
+/* Playoff bracket.
+   Rounds already played show their real scores with the winner marked; the
+   round in progress shows who is facing whom; later rounds stay blank until
+   they are filled. Your own team is highlighted the whole way through, and if
+   you are out, it says plainly where it ended. */
+function PlayoffBracket({ lg, s }) {
+  const u = lg.settings.userSlot;
+  const seeds = s.playoffs.seeds;
+  const seedOf = (idx) => seeds.indexOf(idx) + 1;
+  const six = s.shape.pT === 6;
+  const weeks = six ? [15, 16, 17] : [16, 17];
+  const roundName = (week) => {
+    if (week === 17) return "Championship";
+    if (six && week === 15) return "Wild card";
+    return "Semifinal";
+  };
+
+  // games actually played, pulled from the weekly results
+  const playedByWeek = {};
+  for (const wk of s.weeks) {
+    if (wk.week >= weeks[0]) playedByWeek[wk.week] = wk.matchups;
+  }
+
+  // where did the user's run end
+  let userOut = null, userStill = seeds.includes(u);
+  for (const week of weeks) {
+    for (const m of (playedByWeek[week] || [])) {
+      if (m.a !== u && m.b !== u) continue;
+      const mine = m.a === u ? m.aP : m.bP;
+      const theirs = m.a === u ? m.bP : m.aP;
+      const opp = m.a === u ? m.b : m.a;
+      if (mine < theirs) { userOut = { week, mine, theirs, opp }; userStill = false; }
+    }
+  }
+
+  const Game = ({ m, week }) => {
+    const done = m.aP != null && m.bP != null;
+    const win = done ? (m.aP >= m.bP ? m.a : m.b) : null;
+    return (
+      <div className="card tight" style={{ marginBottom: 8 }}>
+        {[m.a, m.b].map((t) => {
+          const isUser = t === u;
+          const score = t === m.a ? m.aP : m.bP;
+          const won = win === t;
+          return (
+            <div key={t} className="plr" style={{ background: isUser ? "rgba(127,209,232,.08)" : undefined }}>
+              <div className="disp num" style={{ width: 24, color: "var(--mute)", fontSize: 14 }}>
+                {seedOf(t) || ""}
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div className="nm" style={{
+                  whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                  color: done && !won ? "var(--mute)" : "var(--chalk)",
+                }}>
+                  {lg.gms[t].name}{isUser ? " · you" : ""}
+                </div>
+              </div>
+              {done && (
+                <>
+                  <div className="num" style={{ fontWeight: 700, fontSize: 15, color: won ? "var(--first)" : "var(--mute)" }}>
+                    {score.toFixed(1)}
+                  </div>
+                  <div className="tag" style={{ marginLeft: 7, background: won ? "rgba(95,196,110,.16)" : "transparent", color: won ? "var(--green)" : "var(--mute)" }}>
+                    {won ? "W" : "L"}
+                  </div>
+                </>
+              )}
+              {!done && <div className="mini">{week === s.week ? "playing now" : "upcoming"}</div>}
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
+  return (
+    <>
+      <div className="card">
+        <h2 style={{ fontSize: 23, marginBottom: 8 }}>Playoff bracket</h2>
+        {s.champion != null ? (
+          <div className="mini">
+            <b style={{ color: "var(--first)" }}>{lg.gms[s.champion].name}</b> took the title
+            {s.champion === u ? ". That is you." : "."}
+          </div>
+        ) : userOut ? (
+          <div className="mini">
+            You went out in the {roundName(userOut.week).toLowerCase()}, {userOut.mine.toFixed(1)} to {userOut.theirs.toFixed(1)} against {lg.gms[userOut.opp].name}.
+          </div>
+        ) : userStill ? (
+          <div className="mini">
+            You are the {seedOf(u)} seed and still alive.
+            {six && seedOf(u) <= 2 ? " Top two seeds sit out the wild card round." : ""}
+          </div>
+        ) : (
+          <div className="mini">You did not make the {s.shape.pT}-team field this year.</div>
+        )}
+      </div>
+
+      {weeks.map((week) => {
+        const games = playedByWeek[week];
+        const live = !games && s.playoffs.pairs && s.week === week
+          ? s.playoffs.pairs.map(([a, b]) => ({ a, b }))
+          : null;
+        const shown = games || live;
+        return (
+          <div key={week} style={{ marginBottom: 14 }}>
+            <div className="row sp" style={{ marginBottom: 7 }}>
+              <div className="eyebrow">{roundName(week)}</div>
+              <div className="eyebrow">Week {week}</div>
+            </div>
+            {six && week === 15 && (
+              <div className="mini" style={{ marginBottom: 7 }}>
+                {lg.gms[seeds[0]].name} and {lg.gms[seeds[1]].name} have a bye.
+              </div>
+            )}
+            {shown
+              ? shown.map((m, i) => <Game key={i} m={m} week={week} />)
+              : <div className="card"><div className="mini">Waiting on the previous round.</div></div>}
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
 function StandingsView({ lg, s, table }) {
   return (
     <>
@@ -3290,12 +3415,7 @@ function StandingsView({ lg, s, table }) {
           </div>
         ))}
       </div>
-      {s.playoffs && (
-        <div className="card">
-          <h2 style={{ fontSize: 23, marginBottom: 8 }}>Bracket</h2>
-          <div className="mini">Seeds: {s.playoffs.seeds.map((i, k) => `${k + 1}. ${lg.gms[i].name}`).join(" · ")}</div>
-        </div>
-      )}
+      {s.playoffs && <PlayoffBracket lg={lg} s={s} />}
       {s.log.length > 0 && (
         <div className="card">
           <h2 style={{ fontSize: 23, marginBottom: 9 }}>Transactions</h2>
@@ -4079,7 +4199,7 @@ function GMChat({ lg }) {
    with no mock league required. Saved separately from any league.
    ============================================================ */
 
-export const VERSION = "1.13.0";
+export const VERSION = "1.14.0";
 const MY_KEY = "huddle:myteam";
 
 const DEFAULT_MY = { ids: [], teams: 12, ppr: 1, superflex: false, name: "My Team", topPad: 0, liveInjuries: true };
@@ -5278,7 +5398,7 @@ export default function App() {
     ["settings", "Settings"],
   ];
   // inside a mock league there are only three places to be
-  const MOCK_TABS = [["draft", "Draft"], ["team", "Team"], ["season", "Season"]];
+  const MOCK_TABS = [["draft", "Draft"], ["season", "Season"], ["team", "Team"]];
 
   const goTab = (k) => {
     if (k === "mock") { setScreen("mock"); return; }

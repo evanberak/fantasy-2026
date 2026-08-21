@@ -20,7 +20,7 @@ const src = readFileSync("./App.jsx", "utf8");
 const NAMES = [
   "PlayerCardSheet", "DraftRecap", "TeamView", "SeasonView", "TradeDesk",
   "StandingsView", "WeekRecap", "WireView",   "DraftRoom", "Versus", "MyRoster", "TradeCalc", "shellLeague",
-  "PersonaPicker", "BoardArchive", "Settings", "MockHome", "Hub",
+  "PersonaPicker", "BoardArchive", "Settings", "MockHome", "Hub", "PlayoffBracket",
   "TradeHelp", "DraftHelp", "ScoringEditor", "TradeFinder", "Radar", "GMChat",
 ];
 let patched = src;

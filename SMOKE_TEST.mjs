@@ -20,7 +20,7 @@ const NAMES = [
   "Settings", "MockHome", "TradeHelp", "DraftHelp", "Hub", "BoardArchive",
   "ScoringEditor", "TeamView", "SeasonView",   "DraftRoom", "TradeCalc", "TradeFinder", "ShotFinder", "Versus", "Radar",
   "GMChat", "MyRoster", "TradeDesk", "PlayerCardSheet", "StandingsView",
-  "WeekRecap", "DraftRecap", "findTrades", "snapshotBoard",
+  "WeekRecap", "DraftRecap", "findTrades", "snapshotBoard", "PlayoffBracket",
 ];
 let patched = src;
 for (const n of NAMES) {
@@ -344,6 +344,52 @@ check("drafting maximizes the starting lineup, not raw points", () => {
     if ((counts.K || 0) > 1 || (counts.DST || 0) > 1) return `team ${t} carried a spare kicker or defense`;
   }
   return null;
+});
+
+check("the playoff bracket reflects what actually happened", () => {
+  const table = M.makeLeague({ teams: 12, rounds: 15, superflex: false, userSlot: 5, ppr: 1 });
+  while (!M.draftDone(table)) {
+    const onClock = M.onClock(table);
+    const taken = new Set(table.picks.map((p) => p.playerId));
+    M.makePick(table, M.aiPick(table, onClock, M.PLAYERS.filter((p) => !taken.has(p.id))).id);
+  }
+  table.season = M.startSeason(table, 5);
+  let guard = 0;
+  while (table.season.champion == null && guard++ < 20) {
+    const st = table.season, isRS = st.week <= st.shape.rsWeeks;
+    const r = M.simWeek(table, st, null);
+    st.record = r.record; st.actual = r.actual; st.injuries = r.injuries;
+    st.weeks.push({ week: st.week, matchups: r.matchups, lineups: r.lineups, scores: {}, injuries: r.newInjuries, playoff: !isRS });
+    if (isRS) M.runWaivers(table, st, []);
+    if (st.week === st.shape.rsWeeks) st.playoffs = M.seedPlayoffs(table, st);
+    else if (!isRS && st.playoffs) {
+      const next = M.advancePlayoffs(table, st, r.matchups);
+      st.playoffs = next;
+      if (next.done) st.champion = next.champion;
+    }
+    st.week += 1;
+  }
+  const s = table.season;
+  if (s.champion == null) return "season never produced a champion";
+  if (s.playoffs.seeds.length !== s.shape.pT) return "wrong number of playoff teams";
+
+  // the champion must have won the final
+  const final = s.weeks.find((w) => w.week === 17);
+  if (!final || !final.matchups.length) return "no championship game was played";
+  const game = final.matchups[0];
+  const winner = game.aP >= game.bP ? game.a : game.b;
+  if (winner !== s.champion) return "the champion did not win the final";
+
+  // every playoff team must be a real seed, and byes must be the top two
+  if (s.shape.pT === 6) {
+    const wild = s.weeks.find((w) => w.week === 15);
+    const played = wild.matchups.flatMap((m) => [m.a, m.b]);
+    if (played.includes(s.playoffs.seeds[0]) || played.includes(s.playoffs.seeds[1])) {
+      return "a top-two seed played in the wild card round";
+    }
+  }
+  const html = renderToString(React.createElement(M.PlayoffBracket, { lg: table, s }));
+  return html.length > 400 ? null : "bracket rendered almost nothing";
 });
 
 console.log("\nScreens");
